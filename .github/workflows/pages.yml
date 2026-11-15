@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
@@ -41,7 +41,7 @@ jobs:
   deploy:
     needs: verify
     if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[verify only]')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
@@ -60,7 +60,7 @@ jobs:
         uses: actions/deploy-pages@v4
   verify-live:
     needs: deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
@@ -81,7 +81,7 @@ jobs:
           .venv/bin/python -m playwright install --with-deps --only-shell chromium
       - name: Verify the deployed source and full gameplay matrix
         env:
-          DRIVE_URL: https://liushiyumath.github.io/graybox-drive/
+          DRIVE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
           DRIVE_VERIFY_DIR: verification/latest-live
         run: .venv/bin/python tests/verify.py
       - uses: actions/upload-artifact@v4

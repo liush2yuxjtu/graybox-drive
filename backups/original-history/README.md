@@ -1,7 +1,7 @@
 # Original Git history backup
 
 This bundle preserves the complete original repository history through verified commit `9ee8c283d3f3d8f3cc79916993f1d4dcbfc22766`.
-The working source in the repository root is imported byte-for-byte from that commit. The import commit has a different identity because this repository was initialized separately.
+The source snapshot at import commit `66347584641c489d3f27aef5e4356f0f1f53a9c0` was imported byte-for-byte from that commit. Later repository-specific workflow changes do not alter this bundle. The import commit has a different identity because this repository was initialized separately.
 
 Reconstruct the bundle from this directory:
 
