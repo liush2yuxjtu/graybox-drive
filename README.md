@@ -6,6 +6,8 @@
 
 完整源码、测试和原始 Git 历史已保存；[备份与恢复说明](backups/README.md) · [源码保存及 CI 修复验收](verification/github-save.md) · [发布流水线](https://github.com/liush2yuxjtu/graybox-drive/actions/workflows/pages.yml)。
 
+新站发布版本 `cb186f3` 已通过源码完整验证、部署和正式站完整验收；15 项线上资源与仓库源码一致，正式站正常键盘三圈 65.36 秒。[本次发布验收](verification/github-pages-release.md) · [机器可读证据](verification/github-pages-release.json)。
+
 ## 免费游玩
 
 [打开游戏](https://liush2yuxjtu.github.io/graybox-drive/) · [直接玩 Mountain Road](https://liush2yuxjtu.github.io/graybox-drive/?map=mountain)
