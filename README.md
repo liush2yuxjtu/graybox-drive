@@ -2,9 +2,13 @@
 
 一个免费、免登录、无需安装的手机浏览器驾驶小游戏。所有游戏逻辑在浏览器本地运行，没有 API 或服务器费用。
 
+当前维护和发布仓库为 [liush2yuxjtu/graybox-drive](https://github.com/liush2yuxjtu/graybox-drive)。新站由 GitHub Actions 完整验证通过后发布；下方游玩入口指向新站。原仓库的 [历史试玩站](https://liushiyumath.github.io/graybox-drive/) 保留其原有发布版本。
+
+完整源码、测试和原始 Git 历史已保存；[备份与恢复说明](backups/README.md) · [源码保存及 CI 修复验收](verification/github-save.md) · [发布流水线](https://github.com/liush2yuxjtu/graybox-drive/actions/workflows/pages.yml)。
+
 ## 免费游玩
 
-[打开游戏](https://liushiyumath.github.io/graybox-drive/) · [直接玩 Mountain Road](https://liushiyumath.github.io/graybox-drive/?map=mountain)
+[打开游戏](https://liush2yuxjtu.github.io/graybox-drive/) · [直接玩 Mountain Road](https://liush2yuxjtu.github.io/graybox-drive/?map=mountain)
 
 手机建议横屏。左手控制方向，右手控制油门和刹车。支持第一视角、车后追尾和俯视视角，可以在驾驶中切换。
 
@@ -51,9 +55,9 @@ Map 01 采用石墨色赛道、青绿色路肩、暖色天空和低多边形环�
 | --- | --- | --- |
 | Map 01 — Concrete Loop | 原有环形赛道，三圈计时 | 路肩、缓冲区、建筑碰撞和外侧掉落 |
 | Map 02 — Mountain Road | 约 716 m 山脚至山顶，实际爬升 102 m | 连续 S 弯、坡道、左侧山壁、右侧悬崖及 5 个检查点 |
-| [Map 03 — Proving Ground](https://liushiyumath.github.io/graybox-drive/?map=proving) | 驾驶测试场，三圈计时 | S 弯、坡道、护栏、不同路宽与柏油/草地/泥地 |
-| [Map 04 — City Blocks](https://liushiyumath.github.io/graybox-drive/?map=city) | 城市道路，三圈计时 | 路口、红绿灯、横向车流、碰撞与越线判罚 |
-| [Map 05 — Wild Trail](https://liushiyumath.github.io/graybox-drive/?map=offroad) | 越野路线，三圈计时 | 碎石、泥地、岩石、跳台、6 个可选收集物和草地捷径 |
+| [Map 03 — Proving Ground](https://liush2yuxjtu.github.io/graybox-drive/?map=proving) | 驾驶测试场，三圈计时 | S 弯、坡道、护栏、不同路宽与柏油/草地/泥地 |
+| [Map 04 — City Blocks](https://liush2yuxjtu.github.io/graybox-drive/?map=city) | 城市道路，三圈计时 | 路口、红绿灯、横向车流、碰撞与越线判罚 |
+| [Map 05 — Wild Trail](https://liush2yuxjtu.github.io/graybox-drive/?map=offroad) | 越野路线，三圈计时 | 碎石、泥地、岩石、跳台、6 个可选收集物和草地捷径 |
 
 开始界面可选地图。驾驶中点左上角地图名称可暂停并换图。换图会开始新一局，五张地图分别保存最佳成绩。
 
