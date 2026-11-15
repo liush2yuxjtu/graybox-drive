@@ -1,0 +1,166 @@
+# Graybox Drive — Roadmap and verification
+
+**Source of truth:** [ChatGPT project Page](https://chatgpt.com/space/page_b7e95e0e62948191a47974d9feeddc87) for product requirements and decisions; this file for executable tasks and evidence. GitHub PRs and Issues are historical archives, not the work queue.
+
+## Workflow: main only
+
+1. Record goals and decisions in the ChatGPT Page, and keep this roadmap in sync.
+2. Read `AGENTS.md`, inspect `main`, implement the smallest verified change and commit directly to `main`.
+3. Before each commit, run required syntax, unit and browser tests. Inspect actual screenshots for rendering changes. After push, check Actions and the public deployed game.
+4. Report evidence and limitations in `verification/` and in the ChatGPT Page.
+5. Never create a pull request, issue, or secondary branch for this repository. If an external contributor submits an item, migrate useful content into this roadmap/Page.
+6. Serialize concurrent agents' writes: refresh `main` immediately before committing; reconcile conflicts; do not force push.
+
+## Existing deliverables
+
+- [x] Free public browser driving game, touch controls, three camera modes, three laps, off-road/collision/fall feedback; original [Issue #1](https://github.com/LiuShiyuMath/graybox-drive/issues/1).
+- [x] The code from [PR #4](https://github.com/LiuShiyuMath/graybox-drive/pull/4) is already in `main`; that PR was closed. Prior test evidence does not replace a fresh visual regression test.
+
+## State-machine verification
+
+- [x] Audit 27 explicit, derived and temporal state groups in `docs/STATE-MACHINES.md`.
+- [x] Add eight finite TLA+ models and 17 named regression counterexamples, including renderer freshness, camera obstruction and hidden gameplay partitions.
+- [x] Add the real runtime's 4,096 input-source transition checks and Python Playwright normal-animation E2E.
+- [x] Add project `.agents/skills/verify/SKILL.md`, Work dependency installation, isolated evidence with source hashes, and full local/deployed CI gates.
+- [x] Record full `/verify` evidence in `verification/formal-verification.md`; the project Page links the exact commit CI/deployment result.
+
+## P0 — Stability (first)
+
+- [x] Reproduce whole-frame hazard shake and jump-coupled camera lift in real Chromium; move feedback onto the visible car/cockpit and anchor the camera to road support. Add full-draw world/minimap isolation, visible-body and recovery checks, with a finite camera-feedback model and three required counterexamples.
+- [x] Pass the fresh full pre-commit `/verify` after occlusion-probe correction: 542 screenshots, seven recordings, 54 matching source hashes, 11 finite models and 27 named counterexamples. See `verification/camera-verification.md`.
+- [x] Complete Linux CI, deployment and the same full public-site `/verify` for camera/body isolation. [Final workflow 42793331323](https://github.com/LiuShiyuMath/graybox-drive/actions/runs/42793331323) passes all three jobs: Mac/CI retain 542 screenshots each, public site retains 545, all retain seven recordings. All 54 tested source hashes match and all eight deployed assets are compared. The public native probe classifies five genuinely terrain-occluded frames and verifies visible automatic recovery.
+- [x] Classify proven deep-fall terrain occlusion in the native-frame flicker probe, then require visible automatic recovery; preserve every grounded visibility assertion. Both real backends replay the captured pose and reject a missing-mesh negative control. See `verification/camera-verification.md`.
+- [x] Reproduce and fix chase-view car/road overlap and clipping in the live renderer, test obstacles and occlusion, near-plane projection, car height and terrain alignment.
+- [x] Extend tests beyond one chase-deck pixel to a vehicle silhouette/region, across 240 headings, bends, start location, obstacles and falling.
+- [x] Capture three cameras × landscape and portrait for each relevant state, plus impact and fall recordings; inspect screenshots in a real Chromium browser and document browser console errors.
+- [x] Test state transitions: ready, running, paused, resumed, finished; driving, reverse, steering, acceleration and brake; curb, runoff, edge, fall and recovery; collision cooldown, multi-touch, background pause, view persistence and lap tracking.
+- [x] Execute `node --check dist/game.js`, `node --check dist/perspective.js`, `node tests/drive.cjs`, `node tests/browser-states.cjs` and retain results. This migration alone is not a new PASS.
+- [ ] Test Android and iPhone **physical devices** in portrait and landscape: simultaneous steering+throttle, background pause, all cameras, collision/fall feedback; record OS, browser and performance. From [Issue #2](https://github.com/LiuShiyuMath/graybox-drive/issues/2).
+
+## P1 — Shared map data and driving test ground
+
+- [x] Define a reusable `MapDefinition`: spline control points, sampled centerline, per-segment width/elevation/bank/material, collision zones, spawn/checkpoints and objects.
+- [x] Drive visible road Mesh, shoulder geometry, nearest-road calculations, physical collision, edge conditions, respawn and minimap from the same map data. Map 02 uses the same sampled centreline and elevation for these systems; see [verification](../verification/mountain-road.md).
+- [x] Create Map 03 Proving Ground with straights, S curves, slopes, guardrails and asphalt/grass/mud friction; road bank changes mesh and physical ground height.
+
+## P2 — Mountain and circuit
+
+- [x] Add Map 02 — Mountain Road with S bends, collision posts, mountain wall and readable route, migrating [Issue #3](https://github.com/LiuShiyuMath/graybox-drive/issues/3).
+- [x] Add mountain S bends, cliffs, falls, physical slopes, five course checkpoints, summit timing, separate best result and ordered-route finish checks. [42 scenes and runtime evidence](../verification/mountain-road.md).
+
+## P3 — City and off-road
+
+- [x] Map 04 City Blocks: connected cross streets, visible stop lines, timed traffic lights, crossing AI vehicles, physical collisions and once-per-crossing red/amber penalties.
+- [x] Map 05 Wild Trail: rocks, gravel/mud/grass friction and slip, ramp flight and natural landing, six optional markers and a marked 3D shortcut. Five ordered checkpoints plus a valid forward finish-line crossing complete each lap; legal terrain detours do not erase a lap.
+
+## P4 — Visuals and performance
+
+- [x] Recover the November 13 material and coupe patch on `d2182d9`; execute and inspect all 20 real material scenes, whole-car negative control and GPU loss/restoration on November 15. [Candidate and remaining boundaries](REALISTIC-MATERIALS.md).
+- [x] Replace the mountain's fixed-color single-pixel check with complete vehicle visibility at all 240 route positions and a missing-mesh negative control. All 42 mountain scenes and 51 checks pass.
+- [x] Fix the missing favicon resource and rerun all 56 cross-map checks with 76 screenshots and zero console errors. Retain all 486 effects visibility regions while removing redundant redraws; observe the real transient rebound on native frames. The complete effects command passes six collision/fall/recovery recordings and twelve screenshots.
+- [x] Integrate the GT01 procedural body, body-attached normals and bounded software-GPU render targets. Stabilize the normal keyboard driver while preserving physics, clocks, earned laps and score rules. Preserve the earlier failures as diagnostics.
+- [x] Complete frozen-source GT01 local verification: 32 commands, 614 screenshots, 8 recordings, 69 matching hashes and a 66.15-second earned three-lap race with 3 AI contacts. Original cameras remain. [Acceptance](../verification/gt01-acceptance/acceptance.md).
+- [ ] Obtain the writable fork, execute its CI and verify public deployment with identical runtime assets.
+- [ ] After the candidate passes full runtime and visual checks, publish it and rerun the complete suite against the public assets. A `[verify only]` commit runs verification without deploying.
+- [ ] Photorealistic visual treatment remains a separate art upgrade. The delivered playable graybox has depth-tested roads, terrain, building faces, fog and a Canvas fallback; these are not a photorealism claim.
+- [x] Verify clear feedback and reachable simultaneous controls in Chromium at 844×390, 390×844 and 320×740 across all five maps.
+- [ ] Measure rendering performance and touch behavior on physical Android/iPhone devices. Headless viewport results do not establish real-device smoothness.
+
+## Computer teammates and rivals
+
+- [x] Add a blue computer teammate and two red rivals to every map, with physical waypoint driving, yielding, passing and vehicle contacts.
+- [x] Display stable four-car standings and current team points. Freeze the result when the player finishes and label it as that snapshot.
+- [x] Verify pause, resume, restart, map reset, earned-checkpoint recovery and finished-car behavior with 25 actual-runtime contracts, including idle players and live city traffic.
+- [x] Add finite TLA+ models with named mutation counterexamples, preserving the existing models and negative controls. Ten models and 24 specified counterexamples pass.
+- [x] Run the full pre-commit command and inspect real Chromium screenshots and recordings. Runtime `5996d4c` passed Linux `verify`, Pages `deploy` and full public-site `verify-live` in [workflow 42768111878](https://github.com/LiuShiyuMath/graybox-drive/actions/runs/42768111878). Every deployed dist asset is compared with the checkout. [Acceptance evidence](../verification/teams-verification.md).
+
+The computer drivers use their own vehicle state. They do not replace the global player car or use penalty-adjusted elapsed time as their position clock. Physical-phone acceptance stays separate.
+
+## Historical reference / migration
+
+- [Issue #1](https://github.com/LiuShiyuMath/graybox-drive/issues/1) — public launch, completed.
+- [Issue #2](https://github.com/LiuShiyuMath/graybox-drive/issues/2) — real-phone acceptance, still outstanding above.
+- [Issue #3](https://github.com/LiuShiyuMath/graybox-drive/issues/3) — second track, completed as Map 02 above.
+- [PR #4](https://github.com/LiuShiyuMath/graybox-drive/pull/4) — closed and already contained in `main`.
+- [Issue #5](https://github.com/LiuShiyuMath/graybox-drive/issues/5) — complete P0–P4 expansion plan, migrated above.
+
+Closing a historical Issue means **migrated to docs**, not completed. Do not erase original discussions.
+
+## Definition of done
+
+A code change passes only when the changed behavior was actually tested and the evidence was recorded. CI success, HTTP 200, or a screenshot of an untouched UI is insufficient. Phone emulation is not physical-device validation.
+
+## Map 02 — Mountain Road
+
+- [x] About 716 m point-to-point route with 102 m of actual elevation gain.
+- [x] Mountain-side collision, cliff warning, falling and checkpoint recovery penalties.
+- [x] Map selection, three cameras, separate local best times, keyboard and simultaneous touch controls.
+- [x] WebGL depth-tested terrain, adjacent road ribbons and slope-compensated cameras, with Canvas fallback.
+- [x] Local verification: 42 mountain scene captures, 51 checks, 240 chase poses, continuous physics summit drive without teleporting.
+After publishing main, the exact commit’s Actions run and the project Page retain the deployment and public-browser acceptance evidence.
+- [ ] Physical Android/iPhone testing remains outstanding.
+
+## Five-map cloud acceptance
+
+The integration retains the separate Map 02 and formal-verification commits.
+`tests/verify.py` runs the complete original checks, both map matrices, eight TLA+
+models with 17 named regression traces, continuous course drives, cross-map
+input/persistence checks, two orientations of Python normal-animation E2E,
+486 vehicle-region comparisons and six actual collision/fall/recovery recordings.
+It checks every deployed dist asset hash and repeats the same command after deployment.
+See [integration acceptance](../verification/integration-check.md),
+[three-camera views](../verification/five-map-views.jpg) and the exact commit's
+[Actions evidence](https://github.com/LiuShiyuMath/graybox-drive/actions).
+
+The cloud acceptance goal is a complete playable five-map graybox with all executable
+checks green. Physical-phone verification and photorealistic art remain explicitly
+open and must not be silently marked complete.
+
+## Flicker and hidden-state audit, 2026-11-10
+
+- [x] Reproduce the mountain start crossbar hiding almost the entire chase car at tick 60; retain old-source failure, exact pose and original Canvas images.
+- [x] Keep the crossbar and depth ordering; derive one camera pose for WebGL/software and retract before eligible nearby geometry with geometric easing.
+- [x] Reproduce lost WebGL still reporting successful drawing while output is stale; use software during loss and recreate GPU resources on restoration on the same context.
+- [x] Add 26 actual-runtime hidden-state contracts, 540 native animation frames, 450 deterministic beam frames, and repeated loss/restore/map/resize/fresh-renderer comparisons to the required verification command.
+- [x] Full candidate verification, direct main publication and full live verification passed for runtime commit `547f808`. [All three release gates](https://github.com/LiuShiyuMath/graybox-drive/actions/runs/42674668709). [Reproduction and exact-source evidence](../verification/flicker-verification.md).
+
+Finite model checking is not a JavaScript refinement proof. Continuous geometry,
+cross-partition combinations and physical-phone/GPU-driver behavior keep the
+explicit boundaries in `docs/STATE-MACHINES.md`.
+
+## Concept-to-gameplay vertical slice
+
+- [x] Freeze cdf296f gameplay baseline and capture real Chromium before screenshot.
+- [x] Produce a separately labelled screenshot paintover and concept fidelity table.
+- [x] Implement one sports coupe, matching team cars and Map 01 procedural art.
+- [x] Add a separate bounded presentation observer, Web Audio and low-effects preference.
+- [x] Complete the exact-source precommit verify: 61 source hashes, 551 screenshots, 8 recordings, 66.50 s natural three-lap race with two AI contacts after removing the duplicate HUD layer. Retain inconclusive shared-host 60 FPS observations.
+- [x] Publish runtime `41bd106` directly to main. [Workflow 42831782524](https://github.com/LiuShiyuMath/graybox-drive/actions/runs/42831782524) passes verify, deploy and full verify-live. All three runs retain 551 screenshots and eight recordings; all 61 source hashes agree and all 10 deployed assets match. Public normal-keyboard three-lap race: 66.58 s, two AI contacts. [Release evidence](../verification/slice/release.json).
+- [x] Reconcile before/paintover/actual screenshots, four-screen race flow, 82.16 s recording and edited 8 s clip into the project Page and personal overview. Read both Pages back; both videos play to the end and all four flow images load. Preserve other projects and historical evidence.
+
+The slice preserves current race rules and camera/body decoupling. Physical-phone
+validation and photorealistic final assets remain independent open items.
+
+## Original racing concept adaptation
+
+- [x] Recover and inspect the four original generated images; archive them under the game Page.
+- [x] Implement the concept red coupe, circular wheels, dusk city, ring landmark, cyan gates, directional chevrons and race HUD.
+- [x] Add a low rear-quarter Map 01 camera and real depth rendering, preserving independent vehicle feedback.
+- [x] Add bounded real-state tire marks, drift duration and jump air time; verify pause/reset and 96-face capacity.
+- [x] Complete frozen-source precommit verification: 562 screenshots, eight recordings, 64 matching source hashes, 75.60-second natural three-lap race and 13 AI contacts.
+- [x] Publish runtime `de688eb` directly to main; [verify / deploy / full verify-live](https://github.com/LiuShiyuMath/graybox-drive/actions/runs/42851855197) all PASS. Three runs each retain 562 screenshots and eight recordings; 64 source hashes agree and all 12 deployed assets match. Public natural race: 68.03 s, 20 AI contacts.
+- [x] Save/read back the concept child Page, game Page and personal overview. Retain four old original images, eight runtime images, a full 75.72 s video and explicit open concept differences. Inline video playback is not claimed.
+
+See [concept fidelity](CONCEPT-FIDELITY.md) for precise implementation coverage.
+
+## NIGHT_RUN P1: visible concept sky and real recording
+
+- [x] Reproduce the invisible sky asset and fix the actual-image source crop with aspect-preserving cover rendering.
+- [x] Compare loaded/missing sky at three viewports and in software rendering; preserve identical initial gameplay state.
+- [x] Preserve all verification assertions and add failure diagnostics for the observed map-navigation cancellation.
+- [x] Reproduce the five-pixel software negative-control artifact; stabilize the paired readback fixture while retaining all 540 native frames on the default path.
+- [x] Complete the frozen-source full verify: 29 commands, 65 source hashes, 570 screenshots, eight recordings and a 66.46-second natural three-lap race.
+- [x] Prepare a reproducible normal-input production recorder with asset-hash gates and immutable raw video.
+
+See [the P1 acceptance report](../verification/night-run-release/acceptance.md).
+Publication and production-media receipts are recorded after execution.

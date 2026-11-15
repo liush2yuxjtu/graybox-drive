@@ -1,0 +1,196 @@
+"""Project /verify: fail closed and retain each command's real output."""
+import json
+import hashlib
+import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
+import time
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timezone
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT_ROOT = Path(os.environ.get('DRIVE_VERIFY_DIR', ROOT / 'verification/latest')).resolve()
+OUT = OUT_ROOT / datetime.now(timezone.utc).strftime('run-%Y%m%dT%H%M%S%fZ')
+
+
+class VerificationHandler(SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+
+def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    server = None
+    target = os.environ.get('DRIVE_URL')
+    if not target:
+        handler = partial(VerificationHandler, directory=str(ROOT / 'dist'))
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        target = f'http://127.0.0.1:{server.server_port}/'
+    files = list((ROOT / 'dist').glob('*')) + list((ROOT / 'specs').glob('*')) + list((ROOT / 'tests').glob('*'))
+    files += [ROOT / '.agents/skills/verify/SKILL.md', ROOT / '.github/workflows/pages.yml',
+              ROOT / 'package.json', ROOT / 'package-lock.json']
+    summary = {'createdAt': datetime.now(timezone.utc).isoformat(), 'passed': False, 'steps': [],
+               'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+               'worktreeDirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip()),
+               'sourceSha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
+                                for p in sorted(files) if p.is_file()},
+               'target': target, 'evidence': str(OUT)}
+    mountain_url = urlsplit(target)
+    query = dict(parse_qsl(mountain_url.query), map='mountain')
+    mountain_url = urlunsplit(mountain_url._replace(query=urlencode(query)))
+    env = dict(os.environ, DRIVE_URL=target, DRIVE_MOUNTAIN_URL=mountain_url, DRIVE_MOUNTAIN_EVIDENCE=str(OUT / 'mountain'),
+               DRIVE_CAPTURE='1', DRIVE_VERIFY_DIR=str(OUT),
+               DRIVE_EVIDENCE_DIR=str(OUT / 'browser-states'))
+    commands = [['node', '--check', 'dist/' + p] for p in ['maps.js', 'course-pack.js', 'course-world.js', 'racers.js', 'game.js', 'car.js', 'art.js', 'materials.js', 'perspective.js', 'presentation.js']] + [
+                ['node', 'tests/drive.cjs'], ['node', 'tests/mountain.cjs'],
+                ['node', 'tests/course-pack.cjs'], ['node', 'tests/courses.cjs'], ['node', 'tests/state-contract.cjs'],
+                ['node', 'tests/hidden-state-contract.cjs'], ['node', 'tests/racers.cjs'],
+                [sys.executable, 'tests/verify_tla.py'], ['node', 'tests/browser-states.cjs'],
+                ['node', 'tests/browser-mountain.cjs'], ['node', 'tests/browser-courses.cjs'], ['node', 'tests/browser-effects.cjs'],
+                ['node', 'tests/browser-flicker.cjs'], ['node', 'tests/browser-camera.cjs'], ['node', 'tests/browser-body-camera.cjs'],
+                [sys.executable, 'tests/browser_e2e.py'], ['node', 'tests/browser-racers.cjs'],
+                ['node', 'tests/browser-presentation.cjs'], ['node', 'tests/browser-concept.cjs'], ['node', 'tests/browser-sky.cjs'], ['node', 'tests/browser-materials.cjs'], ['node', 'tests/browser-slice.cjs']]
+    try:
+        for index, command in enumerate(commands):
+            print('RUN', ' '.join(command), flush=True)
+            started = time.monotonic()
+            try:
+                result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired as error:
+                output = (error.stdout or b'') + (error.stderr or b'')
+                if isinstance(output, bytes):
+                    output = output.decode('utf-8', errors='replace')
+                (OUT / f'{index+1:02d}.log').write_text(output)
+                summary['steps'].append({'command': command, 'exitCode': None, 'timedOut': True,
+                                         'seconds': round(time.monotonic() - started, 3), 'timeoutSeconds': 300})
+                raise RuntimeError('Verification timed out after 300 seconds: ' + ' '.join(command)) from error
+            text = result.stdout + result.stderr
+            (OUT / f'{index+1:02d}.log').write_text(text)
+            print(text, end='', flush=True)
+            summary['steps'].append({'command': command, 'exitCode': result.returncode,
+                                     'seconds': round(time.monotonic() - started, 3)})
+            if result.returncode:
+                raise RuntimeError('Verification failed: ' + ' '.join(command))
+        matrix = json.loads((OUT / 'browser-states/results.json').read_text())
+        assert len(matrix['cases']) >= 210
+        for row in matrix['cases']:
+            assert row['passed'] and row['screenshot'] and (OUT / 'browser-states' / row['screenshot']).is_file()
+        assert all(row['passed'] for row in matrix['checks'])
+        assert len(list((OUT / 'python-e2e').glob('*.png'))) == 40
+        courses = json.loads((OUT / 'courses/results.json').read_text())
+        assert courses['passed'] and len(courses['screenshots']) >= 52
+        mountain = json.loads((OUT / 'mountain/results.json').read_text())
+        assert len(mountain['pictures']) == 42 and all(row['passed'] for row in mountain['checks'])
+        assert all(row['file'] and (OUT / 'mountain' / row['file']).is_file() for row in mountain['pictures'])
+        assert (OUT / 'mountain/canvas-fallback.jpg').is_file()
+        summary['mountainChecks'] = len(mountain['checks'])
+        summary['screenshots'] = len(matrix['cases']) + 40 + len(courses['screenshots']) + len(list((OUT / 'mountain').glob('*.jpg')))
+        effects = json.loads((OUT / 'effects/results.json').read_text())
+        assert effects['passed'] and len(effects['videos']) == 6
+        assert all((OUT / 'effects' / name).is_file() for name in effects['videos'])
+        summary['videos'] = len(effects['videos'])
+        summary['screenshots'] += len(effects['pictures'])
+        summary['vehicleRegions'] = sum(row.get('vehicleRegions', 0) for row in effects['checks'])
+        flicker = json.loads((OUT / 'flicker/results.json').read_text())
+        assert flicker['passed'] and flicker['temporalFrames'] == 540
+        assert len(flicker['checks']) == 27
+        assert {row['backend'] for row in flicker['occlusionFixture']} == {'webgl', 'software'}
+        for row in flicker['occlusionFixture']:
+            assert row['passed'] and row['hidden']['pixels'] <= 100
+            assert row['recovered']['snapshot']['hazard']['fall'] == 0
+            assert row['negativeControl']['rejected']
+            assert len(row['partialFixtures']) == 2
+            assert {fixture['viewport']['width'] for fixture in row['partialFixtures']} == {390, 844}
+            for partial_fixture in row['partialFixtures']:
+                assert partial_fixture['passed'] and 0 < partial_fixture['region']['pixels'] <= 100
+                proof = partial_fixture['region']['terrainOcclusion']
+                assert 0 < proof['blocked'] < proof['rays']
+                reference = proof['rasterReference']
+                assert reference['playerFaces'] > 0 and reference['expectedPixels'] > 0
+                assert reference['maskMismatches'] == 0 and reference['expectedPixels'] == partial_fixture['region']['pixels']
+                assert partial_fixture['recovered']['snapshot']['hazard']['fall'] == 0
+                assert partial_fixture['negativeControl']['rejected'] and partial_fixture['negativeControl']['pixels'] == 0
+            subpixel_fixture = row['subpixelFixture']
+            assert subpixel_fixture['passed'] and subpixel_fixture['region']['pixels'] <= 100
+            assert subpixel_fixture['region']['terrainOcclusion']['rasterReference']['maskMismatches'] == 0
+            assert subpixel_fixture['recovered']['snapshot']['hazard']['fall'] == 0
+        assert any(row['subpixelFixture']['region']['pixels'] == 0 for row in flicker['occlusionFixture'])
+        assert all((OUT / 'flicker' / name).is_file() for name in flicker['pictures'])
+        summary['temporalFrames'] = flicker['temporalFrames']
+        summary['flickerChecks'] = len(flicker['checks'])
+        summary['terrainOcclusionFixtures'] = len(flicker['occlusionFixture'])
+        summary['partialTerrainOcclusionFixtures'] = sum(len(row['partialFixtures']) for row in flicker['occlusionFixture'])
+        summary['subpixelTerrainOcclusionFixtures'] = len(flicker['occlusionFixture'])
+        summary['screenshots'] += len(flicker['pictures'])
+        camera = json.loads((OUT / 'camera/results.json').read_text())
+        assert camera['passed'] and camera['fixtureFrames'] == 450 and len(camera['checks']) == 6
+        assert all((OUT / 'camera' / name).is_file() for name in camera['pictures'])
+        summary['cameraFrames'] = camera['fixtureFrames']
+        summary['screenshots'] += len(camera['pictures'])
+        body_camera = json.loads((OUT / 'body-camera/results.json').read_text())
+        assert body_camera['passed'] and len(body_camera['checks']) == 4
+        assert all(row['passed'] for row in body_camera['checks'])
+        assert all((OUT / 'body-camera' / name).is_file() for name in body_camera['pictures'])
+        summary['bodyCameraChecks'] = sum(len(row['rows']) for row in body_camera['checks'])
+        summary['screenshots'] += len(body_camera['pictures'])
+        summary['courseChecks'] = len(courses['checks'])
+        summary['matrixChecks'] = len(matrix['checks'])
+        racers = json.loads((OUT / 'racers-browser/results.json').read_text())
+        assert racers['passed'] and racers['normalAnimation']
+        assert racers['checks'] and all(row['passed'] for row in racers['checks'])
+        assert racers['screenshots'] and racers['videos']
+        assert all((OUT / 'racers-browser' / name).is_file()
+                   for name in racers['screenshots'] + racers['videos'])
+        summary['racerChecks'] = len(racers['checks'])
+        summary['screenshots'] += len(racers['screenshots'])
+        summary['videos'] += len(racers['videos'])
+        presentation = json.loads((OUT / 'presentation/results.json').read_text())
+        slice_run = json.loads((OUT / 'slice/results.json').read_text())
+        assert presentation['passed'] and all(row['passed'] for row in presentation['checks'])
+        assert slice_run['passed'] and 60 <= slice_run['raceSeconds'] <= 90 and slice_run['contacts'] > 0
+        assert (OUT / 'slice' / slice_run['video']).is_file()
+        summary['presentationChecks'] = len(presentation['checks'])
+        summary['sliceRaceSeconds'] = slice_run['raceSeconds']
+        summary['screenshots'] += len(presentation['pictures']) + len(slice_run['pictures'])
+        summary['videos'] += 1
+        concept = json.loads((OUT / 'concept/results.json').read_text())
+        assert concept['passed'] and len(concept['checks']) == 5
+        assert all((OUT / 'concept' / name).is_file() for name in concept['pictures'])
+        sky = json.loads((OUT / 'sky/results.json').read_text())
+        assert sky['passed'] and len(sky['checks']) == 4
+        assert all(row['differentPixelRatio'] > .1 for row in sky['checks'])
+        assert all((OUT / 'sky' / name).is_file() for row in sky['checks'] for name in row['pictures'])
+        summary['skyChecks'] = len(sky['checks'])
+        materials = json.loads((OUT / 'materials/results.json').read_text())
+        assert materials['passed'] and len(materials['scenes']) == 20
+        assert all(row['renderer']['backend'] == 'materials' for row in materials['scenes'])
+        assert materials['negativeControl']['pixels'] > 100
+        assert materials['contextRestored'] and materials['fallbackPreservesGame']
+        assert all((OUT / 'materials' / name).is_file() for name in materials['pictures'])
+        summary['materialScenes'] = len(materials['scenes'])
+        summary['screenshots'] += len(materials['pictures'])
+        summary['screenshots'] += sum(len(row['pictures']) for row in sky['checks'])
+        summary['conceptChecks'] = len(concept['checks'])
+        summary['screenshots'] += len(concept['pictures'])
+        summary['passed'] = True
+    except Exception as error:
+        summary['error'] = str(error)
+        print('FAIL', error, file=sys.stderr)
+    finally:
+        (OUT / 'results.json').write_text(json.dumps(summary, indent=2) + '\n')
+        (OUT_ROOT / 'results.json').write_text(json.dumps(summary, indent=2) + '\n')
+        if server:
+            server.shutdown()
+            server.server_close()
+    print('VERIFY PASS' if summary['passed'] else 'VERIFY FAIL', flush=True)
+    if not summary['passed']:
+        raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    main()

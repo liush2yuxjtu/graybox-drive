@@ -1,0 +1,3436 @@
+diff --git a/.agents/skills/verify/SKILL.md b/.agents/skills/verify/SKILL.md
+index f33df24..7d652e3 100644
+--- a/.agents/skills/verify/SKILL.md
++++ b/.agents/skills/verify/SKILL.md
+@@ -103,6 +103,18 @@ Retain the original failing beam pose and the loss-before-event failure with the
+ baseline revision. Do not generalize finite models to continuous geometry or
+ unmeasured physical-device performance.
+ 
++Keep the ordinary vehicle area/width/height limits. For falling terrain
++occlusion, require the full body projection to remain inside the viewport.
++Fully hidden fixtures must keep every vertex/face-centre ray blocked. Partial
++fixtures must exactly match the car-only pixel mask from fresh renderer
++resources at the same pose/backend, using the existing RGB threshold. Retain
++the zero-pixel subpixel transition: the full-mesh fresh reference must also
++produce zero pixels there. Replay both positive partial poses (portrait and
++landscape) in both renderers; removing the whole mesh must give zero pixels and
++fail against the reference. Require actual
++automatic recovery, visible body pixels and exactly one recovery penalty for
++both full and partial fixtures. Preserve the open-road missing-mesh control.
++
+ 
+ ## Art and presentation acceptance
+ 
+diff --git a/.github/workflows/pages.yml b/.github/workflows/pages.yml
+index 57d45eb..45d9e4b 100644
+--- a/.github/workflows/pages.yml
++++ b/.github/workflows/pages.yml
+@@ -40,6 +40,7 @@ jobs:
+           retention-days: 14
+   deploy:
+     needs: verify
++    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[verify only]')
+     runs-on: ubuntu-latest
+     permissions:
+       pages: write
+diff --git a/dist/art.js b/dist/art.js
+index 2c78e1f..22aa7ff 100644
+--- a/dist/art.js
++++ b/dist/art.js
+@@ -5,6 +5,7 @@ const DriveArt=(()=>{
+  const dusk=new Image();dusk.src=new URL('dusk-sky.webp',document.currentScript.src).href;
+  const playerColors=['#e2333f','#881c32','#b52d43'];
+  function carMesh(x,z,angle,colors=playerColors,base=0){
++  if(typeof DriveCar!=='undefined')return DriveCar.mesh(x,z,angle,colors,base,colors===playerColors);
+   const c=Math.cos(angle),s=Math.sin(angle),faces=[];
+   const v=(f,r,y)=>[x+f*c-r*s,base+y,z+f*s+r*c];
+   const face=(points,color)=>faces.push({vertices:points.map(p=>v(...p)),color});
+@@ -116,5 +117,5 @@ const DriveArt=(()=>{
+    const text=i===0?(lap===3?'FINISH':'START / LAP'):'CHECKPOINT';ctx.strokeText(text,x,y);ctx.fillText(text,x,y);ctx.restore();
+   }
+  }
+- return {palette,playerColors,carMesh,circuit,backdrop,labels};
++ return {palette,playerColors,carMesh,circuit,backdrop,labels,skyImage:dusk};
+ })();
+diff --git a/dist/car.js b/dist/car.js
+new file mode 100644
+index 0000000..334dc99
+--- /dev/null
++++ b/dist/car.js
+@@ -0,0 +1,138 @@
++/* Graybox Drive GT-01. Original procedural visual asset. Units match DriveArt.
++ * Local axes: +X forward, +Y up, +Z right; origin at road centre.
++ * No dependencies. Browser: GrayboxGT. Node: require('./graybox-gt.js').
++ */
++(function(root){
++ 'use strict';
++ const TAU=Math.PI*2;
++ const materials={paint:{color:'#d92940',metalness:.72,roughness:.25,clearcoat:1},glass:{color:'#111d29',metalness:.25,roughness:.12},carbon:{color:'#1a1d22',metalness:.25,roughness:.6},rubber:{color:'#16171b',metalness:0,roughness:.93},alloy:{color:'#707782',metalness:.88,roughness:.28},accent:{color:'#52d8f4',metalness:.25,roughness:.35},headlight:{color:'#d8f7ff',emissive:'#b7eaff',emissiveIntensity:1.5},taillight:{color:'#ff233c',emissive:'#ff1733',emissiveIntensity:1.2}};
++ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
++ const mix=(a,b,t)=>a+(b-a)*t;
++ function createFaces(options={}){
++  const lod=clamp(Math.round(options.lod||0),0,2), economy=options.economy===true, n=economy?12:[80,40,20][lod], radial=economy?8:[32,20,12][lod], across=economy?6:16;
++  const faces=[],width=clamp(options.width||1, .92,1.12),ride=clamp(options.rideHeight??.72,.4,1.2)-.72;
++  const add=(vertices,material,part='body')=>faces.push({vertices,color:material==='paint'?(options.color||materials.paint.color):materials[material].color,material,part});
++  const box=(x,y,z,l,h,w,mat,part='body')=>{
++   const p=[[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]].map(([a,b,c])=>[x+a*l/2,y+b*h/2,z+c*w/2]);
++   for(const q of [[0,3,2,1],[4,5,6,7],[0,1,5,4],[3,7,6,2],[0,4,7,3],[1,2,6,5]])add(q.map(i=>p[i]),mat,part);
++  };
++  const halfWidth=x=>10.6+1.9*Math.exp(-(((x-12)/6)**2))+2.1*Math.exp(-(((x+13)/6)**2))-1.9*(Math.abs(x)/22)**8;
++  const height=(x,t)=>{
++   const middle=10.2-4.1*(clamp((x-9)/13,0,1)**1.6)+.6*Math.exp(-(((x+15)/8)**2));
++   const arch=2.8*Math.exp(-(((x-12)/6)**2))+2.4*Math.exp(-(((x+13)/6)**2));
++   return middle + arch*Math.sin(Math.abs(t)*Math.PI/2)**3-.5*Math.abs(t)**8;
++  };
++  const opening=x=>Math.max(...[12,-13].map(c=>Math.abs(x-c)<5.7?5.5+Math.sqrt(5.7**2-(x-c)**2):2.0),2);
++  // Continuous loft, not stacked cuboids. True open wheel arches on both sides.
++  for(let i=0;i<n;i++){
++   const a=-22+44*i/n,b=-22+44*(i+1)/n;
++   for(let k=0;k<across;k++){
++    const u=-1+k*2/across,v=u+2/across;
++    add([[a,height(a,u),u*halfWidth(a)],[b,height(b,u),u*halfWidth(b)],[b,height(b,v),v*halfWidth(b)],[a,height(a,v),v*halfWidth(a)]],'paint');
++   }
++   for(const s of [-1,1]){
++    const aTop=Math.max(height(a,1),opening(a)+.3),bTop=Math.max(height(b,1),opening(b)+.3);
++    add([[a,opening(a),s*halfWidth(a)],[b,opening(b),s*halfWidth(b)],[b,bTop,s*halfWidth(b)],[a,aTop,s*halfWidth(a)]],'paint');
++    add([[a,opening(a),s*halfWidth(a)],[a,opening(a),s*(halfWidth(a)-.45)],[b,opening(b),s*(halfWidth(b)-.45)],[b,opening(b),s*halfWidth(b)]],'carbon');
++   }
++   if(a>8||b<-10)add([[a,height(a,-.055)+.035,-.055*halfWidth(a)],[b,height(b,-.055)+.035,-.055*halfWidth(b)],[b,height(b,.055)+.035,.055*halfWidth(b)],[a,height(a,.055)+.035,.055*halfWidth(a)]],'accent');
++  }
++  for(const end of [-22,22]){
++   const w=halfWidth(end),top=height(end,0);
++   add([[end,2,-w],[end,2,w],[end,top,w],[end,top,-w]],'paint');
++  }
++  // Canopy: curved cross sections with roof, separate side glass and pillars.
++  const stations=[[-10,10.6,8.3],[-8,12.5,7.7],[-5,15.4,6.5],[-2,16,6.35],[1.5,15.5,6.45],[4,14,7.1],[8,10.8,8.5]];
++  for(let i=0;i<stations.length-1;i++){
++   const [x,h,w]=stations[i],[xx,hh,ww]=stations[i+1];
++   for(let j=0;j<12;j++){
++    const a=-1+j/6,b=a+1/6;
++    const p=(f,y,z,t)=>[f,y-2.5*Math.abs(t)**2,z*t];
++    add([p(x,h,w,a),p(xx,hh,ww,a),p(xx,hh,ww,b),p(x,h,w,b)],i===2||i===3?'paint':'glass','canopy');
++   }
++   for(const s of [-1,1])add([[x,10.5,s*8.5],[xx,10.5,s*8.5],[xx,hh-2.5,s*ww],[x,h-2.5,s*w]],'glass','canopy');
++   if(i===2||i===3)add([[x,h+.03,-.6],[xx,hh+.03,-.6],[xx,hh+.03,.6],[x,h+.03,.6]],'accent','canopy');
++  }
++  // Vents, front splitter, side skirts, mirrors, diffuser and narrow lamps.
++  box(22.15,3.8,0,.6,3.1,15.5,'carbon');box(21.9,1.8,0,2,.45,23.5,'carbon');
++  box(-21.9,4.1,0,.8,4.8,19.4,'carbon');box(-22.4,1.7,0,1.1,.4,24,'carbon');
++  for(const z of [-8.5,-4.3,0,4.3,8.5])box(-22.5,2.6,z,2.6,3,.22,'carbon');
++  box(-22.44,8.9,0,.13,.45,20.3,'taillight');
++  for(const s of [-1,1]){
++   add([[22.37,6.2,s*6.5],[21.7,7,s*10.2],[21.7,7.3,s*10.2],[22.37,6.5,s*6.5]],'headlight');
++   box(0,2.1,s*11.9,25,.55,1.35,'carbon');
++   add([[-8,5,s*12],[-4,4,s*12],[-1,10,s*11.1],[-5,10.7,s*11.4]],'carbon');
++   box(5.1,12.1,s*9.2,.5,.45,3.1,'carbon','mirror');
++   box(5.1,12.7,s*10.8,2.8,.9,1.7,'carbon','mirror');
++   for(let i=0;i<5;i++)box(-16+i*.85,12,s*8.7,.28,.1,2.6,'carbon');
++  }
++  if(options.wing!==false){
++   for(const s of [-1,1])box(-17.9,14,s*8.8,1,6.4,.5,'carbon','wing');
++   box(-18.9,17.2,0,4.4,.55,28,'carbon','wing');
++   for(const s of [-1,1])box(-18.9,17.6,s*14,4.9,1.7,.27,'carbon','wing');
++  }
++  // Offset visual body only. Tyres retain ground contact.
++  const transformed=new WeakSet();
++  for(const f of faces)for(const v of f.vertices){if(transformed.has(v))continue;transformed.add(v);v[1]+=ride;v[2]*=width;}
++  for(const x of [-13,12])for(const s of [-1,1]){
++   const z=s*12.25*width, part=`wheel-${x>0?'front':'rear'}-${s<0?'left':'right'}`;
++   const at=(a,r,d)=>[x+Math.cos(a)*r,5.5+Math.sin(a)*r,z+s*d];
++   for(let i=0;i<radial;i++){
++    const a=i/radial*TAU,b=(i+1)/radial*TAU;
++    add([at(a,5.25,-1.25),at(b,5.25,-1.25),at(b,5.25,1.25),at(a,5.25,1.25)],'rubber',part);
++    add([at(a,5.25,1.25),at(b,5.25,1.25),at(b,3.8,1.45),at(a,3.8,1.45)],'rubber',part);
++    add([at(a,3.8,1.46),at(b,3.8,1.46),at(b,3.4,1.48),at(a,3.4,1.48)],'alloy',part);
++    add([at(a,3.1,1.1),at(b,3.1,1.1),[x,5.5,z+s*1.1]],'alloy',part);
++   }
++   for(let i=0;i<5;i++){
++    const a=i/5*TAU;
++    add([at(a,.6,1.52),at(a-.08,3.55,1.52),at(a+.12,3.55,1.52),at(a+.4,.6,1.52)],'carbon',part);
++   }
++   box(x,5.5,z+s*1.55,.9,.9,.3,'alloy',part);
++   box(x+2,5.8,z+s*.95,1,3,.35,'paint',part);
++  }
++  return faces;
++ }
++ function carMesh(x=0,z=0,angle=0,colors,base=0,options={}){
++  const c=Math.cos(angle),s=Math.sin(angle);
++  return createFaces({...options,color:colors?.[0]||options.color}).map(f=>({...f,vertices:f.vertices.map(([a,b,d])=>[x+a*c-d*s,base+b,z+a*s+d*c])}));
++ }
++ const metadata={name:'Graybox GT-01',version:1,axes:'+X forward, +Y up, +Z right',units:'existing Graybox Drive world units',wheelRadius:5.25,wheelbase:25,visualLength:45.8,collision:'Use existing game collision; visual geometry does not change physics.',scope:'Standalone visual candidate, not deployed.'};
++ const api={createFaces,carMesh,materials,metadata};
++ root.GrayboxGT=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
++})(globalThis);
++
++// Bridge the procedural asset to the game's existing visual-only face interface.
++const DriveCar = (() => {
++ const templates = new Map();
++ const materialNames = {alloy:'metal',carbon:'rubber',accent:'paint',headlight:'lamp',taillight:'lamp'};
++ function template(colors, player, economy) {
++  const key = colors[0] + '/' + player + '/' + economy;
++  if (templates.has(key)) return templates.get(key);
++  const faces = GrayboxGT.createFaces({color:colors[0],lod:player?1:2,economy});
++  const sums = new Map();
++  const keyAt = (face,point) => face.material + '/' + face.part + '/' + point.map(n=>n.toFixed(4)).join('/');
++  for (const face of faces) {
++   const [a,b,c] = face.vertices, u=b.map((n,i)=>n-a[i]),v=c.map((n,i)=>n-a[i]);
++   let n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]],len=Math.hypot(...n)||1;
++   n=n.map(v=>v/len);face.normal=n;
++   if (face.part==='body'&&face.material==='paint'||face.part==='canopy') for (const p of face.vertices) {
++    const key=keyAt(face,p), sum=sums.get(key)||[0,0,0];for(let i=0;i<3;i++)sum[i]+=n[i];sums.set(key,sum);
++   }
++  }
++  for(const face of faces){
++   face.normals=face.vertices.map(p=>{const n=sums.get(keyAt(face,p))||face.normal,len=Math.hypot(...n)||1;return n.map(v=>v/len)});
++   face.material=materialNames[face.material]||face.material;
++   delete face.normal;
++  }
++  templates.set(key,faces);return faces;
++ }
++ function mesh(x,z,angle,colors,base=0,player=false){
++  const c=Math.cos(angle),s=Math.sin(angle),rotate=([a,b,d])=>[a*c-d*s,b,a*s+d*c];
++  const renderer=typeof mountainRenderer!=='undefined'?mountainRenderer:null;
++  const status=renderer?.snapshot?.();
++  const economy=!renderer||status?.softwareGpu===true||status?.backend==='software';
++  return template(colors,player,economy).map(face=>({...face,vertices:face.vertices.map(p=>{const v=rotate(p);return[x+v[0],base+v[1],z+v[2]]}),normals:face.normals.map(rotate)}));
++ }
++ return {mesh};
++})();
+diff --git a/dist/favicon.svg b/dist/favicon.svg
+new file mode 100644
+index 0000000..11b0fed
+--- /dev/null
++++ b/dist/favicon.svg
+@@ -0,0 +1,8 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
++ <rect width="64" height="64" rx="14" fill="#171c21"/>
++ <path d="M10 10v44M54 10v44" stroke="#38c8f1" stroke-width="2"/>
++ <rect x="17" y="9" width="30" height="46" rx="8" fill="#e2333f"/>
++ <path d="M29 10h6v11h-6z" fill="#56d9ff"/>
++ <path d="M22 22h20l2 12H20zM22 43h20v6H22z" fill="#24313f"/>
++ <path d="M18 12h7M39 12h7M18 52h7M39 52h7" stroke="#fff3d3" stroke-width="3"/>
++</svg>
+diff --git a/dist/index.html b/dist/index.html
+index 4a2797a..0d3d1e2 100644
+--- a/dist/index.html
++++ b/dist/index.html
+@@ -1,6 +1,6 @@
+-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"><meta name="theme-color" content="#171c21"><title>灰盒车场 · GRAYBOX DRIVE</title><link rel="stylesheet" href="style.css?v=12"><link rel="stylesheet" href="concept.css?v=12"></head><body>
++<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"><meta name="theme-color" content="#171c21"><title>灰盒车场 · GRAYBOX DRIVE</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><link rel="stylesheet" href="style.css?v=12"><link rel="stylesheet" href="concept.css?v=12"></head><body>
+ <header><div class="brand"><span class="mark">G<span>↗</span></span><div>灰盒车场<small>GRAYBOX DRIVE / 001</small></div></div><div class="stats"><div><small id="race-label">圈数 LAP</small><b id="lap">1 <em>/ 3</em></b></div><div><small>用时 TIME</small><b id="time">00:00.00</b></div><div class="best"><small>最佳 BEST</small><b id="best">—</b></div></div><button id="pause" class="tool" aria-label="暂停">Ⅱ</button><button id="reset" class="tool" aria-label="重开">↻</button></header>
+ <main><canvas id="game" aria-label="灰盒赛车赛道"></canvas><button id="map-menu" class="map-menu" aria-label="选择地图"><span id="map-title">MAP 01 · Concrete Loop</span> ▾</button><div id="route-hud" class="route-hud"></div><nav class="views" aria-label="驾驶视角"><button data-view="first" aria-pressed="true">第一视角</button><button data-view="chase" aria-pressed="false">车后追尾</button><button data-view="top" aria-pressed="false">俯视</button></nav><div id="presentation-settings" class="presentation-settings" aria-label="画面与声音"><button id="effects-toggle" aria-pressed="true">特效 开</button><button id="sound-toggle" aria-pressed="false">声音 关</button></div><div id="race-progress" class="race-progress" role="progressbar" aria-label="比赛进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div><div class="speed"><strong id="speed">0</strong><span>KM/H</span><small id="surface">就绪</small></div><aside id="team-hud" class="team-hud" aria-label="2 对 2 队伍竞速"><b id="team-rank">你 4 / 4</b><span id="team-score">当前队伍积分</span><small id="team-order"></small><small id="team-intent"></small></aside><div id="drive-moment" role="status" hidden></div><div id="toast"></div><div id="feedback" class="feedback" role="status" aria-live="polite" hidden><b id="feedback-title"></b><span id="feedback-detail"></span></div>
+ <div class="overlay" id="overlay"><section><div class="map-picker" aria-label="选择地图"><button data-map="circuit" aria-pressed="true">01 · Concrete Loop</button><button data-map="mountain" aria-pressed="false">02 · Mountain Road</button><button data-map="proving" aria-pressed="false">03 · 测试场</button><button data-map="city" aria-pressed="false">04 · 城市</button><button data-map="offroad" aria-pressed="false">05 · 越野</button></div><div class="eyebrow" id="map-eyebrow">YOUR FIRST GRAYBOX LAP</div><h1>给简单的方块，<br>一点速度。</h1><p>一辆车，一条赛道。完成 3 圈计时挑战。<br>驶出路面会减速，碰撞会反弹。<br>外侧黄黑边缘是落差区，掉落后自动回赛道 +5 秒。</p><div class="keys">左手转向 <span>＋</span> 右手油门 / 刹车</div><button id="start" class="primary">开始驾驶 <span>↗</span></button><small class="hint">手机横屏更好玩 · WASD / 方向键驾驶 · V 切换视角</small></section><div class="track-label">TEST CIRCUIT<br><b id="map-label">01 / CONCRETE LOOP</b></div></div>
+ <div class="controls"><div class="steering"><button data-key="left" aria-label="左转">←</button><button data-key="right" aria-label="右转">→</button></div><button id="recover" class="recover">回赛道</button><div class="pedals"><button data-key="brake" class="brake">刹车</button><button data-key="gas" class="gas">油门 <span>↑</span></button></div></div></main>
+-<script src="maps.js?v=12"></script><script src="course-pack.js?v=12"></script><script src="course-world.js?v=12"></script><script src="racers.js?v=12"></script><script src="game.js?v=12"></script><script src="art.js?v=13"></script><script src="perspective.js?v=12"></script><script src="presentation.js?v=12"></script></body></html>
++<script src="maps.js?v=12"></script><script src="course-pack.js?v=12"></script><script src="course-world.js?v=12"></script><script src="racers.js?v=12"></script><script src="game.js?v=12"></script><script src="car.js?v=14"></script><script src="art.js?v=14"></script><script src="materials.js?v=14"></script><script src="perspective.js?v=14"></script><script src="presentation.js?v=12"></script></body></html>
+diff --git a/dist/materials.js b/dist/materials.js
+new file mode 100644
+index 0000000..65becc1
+--- /dev/null
++++ b/dist/materials.js
+@@ -0,0 +1,210 @@
++'use strict';
++
++const DriveMaterials = (() => {
++ const surfaces = {
++  paint: [.24, .7, 0, 0], glass: [.12, .78, 0, 0], metal: [.25, .82, 0, 0],
++  rubber: [.93, .03, 0, 4], asphalt: [.64, .08, 0, 1], concrete: [.86, .03, 0, 2],
++  facade: [.36, .44, 0, 3], stone: [.94, 0, 0, 2], soil: [.98, 0, 0, 4],
++  lamp: [.3, .1, 1.6, 0], marking: [.65, .03, 0, 0]
++ };
++ const asphalt = new Set(['#292b39', '#505c57', '#4d605a', '#4b5a55', '#46534f']);
++ const facade = new Set(['#555063', '#706174', '#9c8495', '#8f8092', '#4e495e', '#706175']);
++ const lights = new Set(['#ffcfbf', '#fa5b62', '#ff9e93', '#fff3d3', '#fff5e6', '#c6ebff', '#a2f0ff', '#38c8f1']);
++
++ function surfaceFor(face) {
++  if (face.material && surfaces[face.material]) return surfaces[face.material];
++  if (lights.has(face.color)) return surfaces.lamp;
++  if (facade.has(face.color)) return surfaces.facade;
++  if (face.ground) return asphalt.has(face.color) ? surfaces.asphalt : surfaces.concrete;
++  return surfaces.concrete;
++ }
++
++ function vertices(faces) {
++  const data = [];
++  for (const face of faces) {
++   const points = face.vertices, color = face.color.slice(1);
++   const rgb = [0, 2, 4].map(index => parseInt(color.slice(index, index + 2), 16) / 255);
++   const a = points[0], b = points[1], c = points[2];
++   const u = b.map((v, i) => v - a[i]), v = c.map((n, i) => n - a[i]);
++   let normal = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
++   const length = Math.hypot(...normal);
++   if (length < .000001) continue;
++   normal = normal.map(value => value / length);
++   if (face.ground && normal[1] < 0) normal = normal.map(value => -value);
++   const surface = surfaceFor(face);
++   for (let k = 1; k < points.length - 1; k++) for (const index of [0, k, k + 1]) {
++    data.push(...points[index], ...rgb, ...(face.normals?.[index] || normal), ...surface);
++   }
++  }
++  return new Float32Array(data);
++ }
++
++ function createRenderer(surface, gl) {
++  let resources, failure = null, draws = 0;
++  const debug = gl.getExtension('WEBGL_debug_renderer_info');
++  const rendererName = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
++  // Software rasterizers need a bounded render target so short collision states
++  // remain observable between frames. Physics and input still run unchanged.
++  const softwareGpu = /swiftshader|llvmpipe|lavapipe|software/i.test(rendererName || '');
++  const renderLimit = softwareGpu ? 256 : Infinity;
++  const light = [.48, .64, -.6], right = [.780869, 0, .624695], up = [-.399805, .768375, .499756];
++  const shadowSize = softwareGpu ? 128 : 768, shadowRange = 650;
++  const vertex = `attribute vec3 aPosition;attribute vec3 aColor;attribute vec3 aNormal;attribute vec4 aSurface;
++   uniform vec3 uCamera;uniform vec2 uForward;uniform vec2 uRight;uniform vec2 uPitch;uniform vec3 uProjection;
++   uniform vec3 uLightCenter;uniform vec3 uLightRight;uniform vec3 uLightUp;uniform vec3 uLight;uniform float uShadowRange;
++   varying vec3 vColor;varying vec3 vNormal;varying vec3 vWorld;varying vec4 vSurface;varying vec3 vShadow;varying float vDepth;
++   void main(){vec3 d=aPosition-uCamera;float f=dot(d.xz,uForward);float r=dot(d.xz,uRight);
++    float height=d.y*uPitch.x+f*uPitch.y;float depth=f*uPitch.x-d.y*uPitch.y;
++    gl_Position=vec4(r*uProjection.x,height*uProjection.y+depth*uProjection.z,1.00267*depth-8.01068,depth);
++    vec3 s=aPosition-uLightCenter;vShadow=vec3(dot(s,uLightRight),dot(s,uLightUp),dot(s,-uLight))/uShadowRange*.5+.5;
++    vColor=aColor;vNormal=aNormal;vWorld=aPosition;vSurface=aSurface;vDepth=depth;}`;
++  const fragment = `precision highp float;
++   uniform vec3 uCamera;uniform vec3 uLight;uniform sampler2D uShadow;uniform sampler2D uSky;uniform float uHasSky;
++   varying vec3 vColor;varying vec3 vNormal;varying vec3 vWorld;varying vec4 vSurface;varying vec3 vShadow;varying float vDepth;
++   float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
++   float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1)),f.x),f.y);}
++   vec3 environment(vec3 d,float rough){
++    vec3 col=mix(vec3(.17,.15,.24),vec3(.59,.51,.67),smoothstep(-.1,.7,d.y));
++    col=mix(col,vec3(1.,.71,.49),pow(max(0.,dot(d,uLight)),24.));
++    vec2 uv=vec2(atan(d.z,d.x)/6.2831853+.5,clamp(.5+d.y*.46,.02,.98));
++    vec3 sky=texture2D(uSky,uv).rgb;
++    col=mix(col,mix(sky,vec3(.55,.43,.52),rough*.5),uHasSky*.7);
++    float tower=step(d.y,.035+hash(vec2(floor(uv.x*72.),1.))*.16)*step(-.3,d.y);
++    return mix(col,vec3(.12,.12,.18),tower*.67);
++   }
++   float shadow(){
++    if(vShadow.x<0.||vShadow.x>1.||vShadow.y<0.||vShadow.y>1.||vShadow.z>1.)return 1.;
++    float sum=0.;float bias=.0014+.001*(1.-abs(dot(normalize(vNormal),uLight)));
++    for(int x=0;x<2;x++)for(int y=0;y<2;y++){
++     vec4 rgba=texture2D(uShadow,vShadow.xy+(vec2(float(x),float(y))-.5)/${shadowSize}.);
++     float depth=dot(rgba,vec4(1.,1./255.,1./65025.,1./16581375.));
++     sum+=step(vShadow.z-bias,depth);
++    }return .24+sum*.19;
++   }
++   void main(){
++    vec3 n=normalize(vNormal),view=normalize(uCamera-vWorld);if(dot(n,view)<0.)n=-n;
++    float rough=vSurface.x,metal=vSurface.y,kind=vSurface.w;vec3 base=pow(vColor,vec3(2.2));
++    if(kind>.5&&kind<1.5){
++     float grain=noise(vWorld.xz*2.8),patch=noise(vWorld.xz*.018);
++     base*=.79+grain*.32;rough=clamp(rough+(patch-.5)*.48,.22,.88);
++     n=normalize(n+vec3((grain-.5)*.055,0.,(noise(vWorld.zx*2.3)-.5)*.055));
++    }else if(kind>1.5&&kind<2.5){
++     float grain=noise(vWorld.xz*.8+vWorld.yz*.15);base*=.88+grain*.22;
++     vec2 panel=fract(vec2(vWorld.x+vWorld.z,vWorld.y)*.025);
++     base*=.8+.2*smoothstep(.006,.02,min(panel.x,panel.y));
++    }else if(kind>2.5&&kind<3.5){
++     vec2 tile=vec2(vWorld.x+vWorld.z,vWorld.y)*vec2(.09,.12),cell=floor(tile),f=fract(tile);
++     float window=step(.16,f.x)*step(f.x,.87)*step(.14,f.y)*step(f.y,.84);
++     base*=mix(.55,1.17,window);rough=mix(.7,.23,window);
++     base+=vec3(.27,.16,.065)*window*step(.86,hash(cell));
++    }else if(kind>3.5){base*=.86+noise(vWorld.xz*2.)*.2;}
++    vec3 l=normalize(uLight),halfway=normalize(l+view);float nl=max(.0,dot(n,l)),nv=max(.04,dot(n,view)),nh=max(.0,dot(n,halfway));
++    float a=rough*rough,a2=a*a,d=nh*nh*(a2-1.)+1.;float distribution=a2/max(.0001,3.14159265*d*d);
++    float k=(rough+1.)*(rough+1.)*.125;float geometry=(nl/(nl*(1.-k)+k))*(nv/(nv*(1.-k)+k));
++    vec3 f0=mix(vec3(.045),base,metal),fresnel=f0+(1.-f0)*pow(1.-max(0.,dot(halfway,view)),5.);
++    vec3 specular=distribution*geometry*fresnel/max(.01,4.*nl*nv);
++    vec3 diffuse=(1.-fresnel)*(1.-metal)*base/3.14159265;
++    float visibility=shadow();vec3 direct=(diffuse+specular)*vec3(3.8,2.55,1.9)*nl*visibility;
++    vec3 reflection=environment(reflect(-view,n),rough),ambient=base*mix(vec3(.22,.19,.3),vec3(.48,.48,.62),n.y*.5+.5)*(1.-metal*.72);
++    vec3 envF=f0+(max(vec3(1.-rough),f0)-f0)*pow(1.-nv,5.);
++    vec3 color=direct+ambient+reflection*envF*(1.-rough*.57)*.9+base*vSurface.z;
++    float fog=smoothstep(450.,2900.,vDepth)*.72;color=mix(color,vec3(.38,.32,.43),fog);
++    color=color/(color+vec3(.7));color=pow(color,vec3(1./2.2));gl_FragColor=vec4(color,1.);
++   }`;
++  const depthVertex = `attribute vec3 aPosition;uniform vec3 uLightCenter;uniform vec3 uLightRight;uniform vec3 uLightUp;uniform vec3 uLight;uniform float uShadowRange;
++   void main(){vec3 p=aPosition-uLightCenter;gl_Position=vec4(vec3(dot(p,uLightRight),dot(p,uLightUp),dot(p,-uLight))/uShadowRange,1.);}`;
++  const depthFragment = `precision highp float;void main(){vec4 enc=fract(gl_FragCoord.z*vec4(1.,255.,65025.,16581375.));enc-=enc.yzww*vec4(1./255.,1./255.,1./255.,0.);gl_FragColor=enc;}`;
++
++  function program(vs, fs) {
++   const shaders = [ [gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs] ].map(([type, source]) => {
++    const shader = gl.createShader(type);gl.shaderSource(shader, source);gl.compileShader(shader);
++    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(shader));
++    return shader;
++   });
++   const result = gl.createProgram();for (const shader of shaders) gl.attachShader(result, shader);
++   gl.linkProgram(result);for (const shader of shaders) gl.deleteShader(shader);
++   if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw Error(gl.getProgramInfoLog(result));
++   const names = ['uCamera', 'uForward', 'uRight', 'uPitch', 'uProjection', 'uLightCenter', 'uLightRight', 'uLightUp', 'uLight', 'uShadowRange', 'uShadow', 'uSky', 'uHasSky'];
++   return { value: result, locations: Object.fromEntries(names.map(name => [name, gl.getUniformLocation(result, name)])),
++    attributes: Object.fromEntries(['aPosition', 'aColor', 'aNormal', 'aSurface'].map(name => [name, gl.getAttribLocation(result, name)])) };
++  }
++
++  function createResources() {
++   const main = program(vertex, fragment), depth = program(depthVertex, depthFragment);
++   const shadowTexture = gl.createTexture();gl.bindTexture(gl.TEXTURE_2D, shadowTexture);
++   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, shadowSize, shadowSize, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
++   for (const name of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, name, gl.NEAREST);
++   for (const name of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, name, gl.CLAMP_TO_EDGE);
++   const shadowDepth = gl.createRenderbuffer();gl.bindRenderbuffer(gl.RENDERBUFFER, shadowDepth);
++   gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, shadowSize, shadowSize);
++   const framebuffer = gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
++   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, shadowTexture, 0);
++   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, shadowDepth);
++   if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Shadow framebuffer unavailable');
++   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
++   const skyTexture = gl.createTexture();gl.bindTexture(gl.TEXTURE_2D, skyTexture);
++   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([160, 125, 150, 255]));
++   for (const name of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, name, gl.LINEAR);
++   for (const name of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, name, gl.CLAMP_TO_EDGE);
++   return { main, depth, shadowTexture, shadowDepth, framebuffer, skyTexture, skyLoaded: false,
++    skyUnavailable: false, staticBuffer: gl.createBuffer(), carBuffer: gl.createBuffer(), version: -1, count: 0 };
++  }
++
++  surface.addEventListener('webglcontextlost', event => { event.preventDefault();resources = undefined; });
++  surface.addEventListener('webglcontextrestored', () => { resources = undefined;failure = null; });
++
++  function bind(buffer, pipeline) {
++   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
++   for (const [name, size, offset] of [['aPosition', 3, 0], ['aColor', 3, 12], ['aNormal', 3, 24], ['aSurface', 4, 36]]) {
++    const index = pipeline.attributes[name];if (index < 0) continue;
++    gl.enableVertexAttribArray(index);gl.vertexAttribPointer(index, size, gl.FLOAT, false, 52, offset);
++   }
++  }
++
++  return {
++   surface,
++   snapshot: () => ({ backend: gl.isContextLost() ? 'software' : resources ? 'materials' : 'unavailable', draws, failure, shadowSize, softwareGpu, renderLimit: Number.isFinite(renderLimit) ? renderLimit : null, skyLoaded: !!resources?.skyLoaded }),
++   draw(camera, forward, cameraRight, pitch, focal, horizon, carFaces) {
++    if (gl.isContextLost()) { resources = undefined;return false; }
++    if (resources === undefined) try { resources = createResources(); } catch (error) { failure = error.message;resources = null; }
++    if (!resources) return false;
++    const r = resources, ratio = Math.min(devicePixelRatio || 1, 1.5, renderLimit / Math.max(w, h)), width = Math.round(w * ratio), height = Math.round(h * ratio);
++    if (surface.width !== width || surface.height !== height) { surface.width = width;surface.height = height; }
++    const sky = typeof DriveArt !== 'undefined' ? DriveArt.skyImage : null;
++    if (sky?.complete && sky.naturalWidth && !r.skyLoaded && !r.skyUnavailable) {
++     gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D, r.skyTexture);
++     try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sky);r.skyLoaded = true; }
++     catch { r.skyUnavailable = true; }
++    }
++    bind(r.staticBuffer, r.main);
++    if (r.version !== roadMeshVersion) {
++     const data = vertices(roadMesh);gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
++     r.count = data.length / 13;r.version = roadMeshVersion;
++    }
++    const dynamic = vertices(carFaces);bind(r.carBuffer, r.main);gl.bufferData(gl.ARRAY_BUFFER, dynamic, gl.DYNAMIC_DRAW);
++    const center = [car.x, nearest(car.x, car.y).elevation || 0, car.y];
++    const lightUniforms = pipeline => {
++     const u = pipeline.locations;gl.uniform3fv(u.uLightCenter, center);gl.uniform3fv(u.uLightRight, right);
++     gl.uniform3fv(u.uLightUp, up);gl.uniform3fv(u.uLight, light);gl.uniform1f(u.uShadowRange, shadowRange);
++    };
++    gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LEQUAL);gl.disable(gl.CULL_FACE);gl.disable(gl.BLEND);
++    gl.bindFramebuffer(gl.FRAMEBUFFER, r.framebuffer);gl.viewport(0, 0, shadowSize, shadowSize);
++    gl.clearColor(1, 1, 1, 1);gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
++    gl.useProgram(r.depth.value);lightUniforms(r.depth);bind(r.staticBuffer, r.depth);gl.drawArrays(gl.TRIANGLES, 0, r.count);
++    gl.bindFramebuffer(gl.FRAMEBUFFER, null);gl.viewport(0, 0, width, height);gl.clearColor(0, 0, 0, 0);gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
++    gl.useProgram(r.main.value);lightUniforms(r.main);
++    const u = r.main.locations;gl.uniform3fv(u.uCamera, camera);gl.uniform2fv(u.uForward, forward);gl.uniform2fv(u.uRight, cameraRight);
++    gl.uniform2fv(u.uPitch, [Math.cos(pitch), Math.sin(pitch)]);gl.uniform3fv(u.uProjection, [focal * 2 / w, focal * 2 / h, 1 - 2 * horizon / h]);
++    gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D, r.shadowTexture);gl.uniform1i(u.uShadow, 0);
++    gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D, r.skyTexture);gl.uniform1i(u.uSky, 1);gl.uniform1f(u.uHasSky, r.skyLoaded ? 1 : 0);
++    bind(r.staticBuffer, r.main);gl.drawArrays(gl.TRIANGLES, 0, r.count);
++    bind(r.carBuffer, r.main);gl.drawArrays(gl.TRIANGLES, 0, dynamic.length / 13);
++    if (gl.isContextLost()) { resources = undefined;return false; }
++    ctx.drawImage(surface, 0, 0, w, h);
++    if (gl.isContextLost()) { resources = undefined;return false; }
++    draws++;return true;
++   }
++  };
++ }
++ return { createRenderer };
++})();
+diff --git a/dist/perspective.js b/dist/perspective.js
+index 04b3f9d..5403e38 100644
+--- a/dist/perspective.js
++++ b/dist/perspective.js
+@@ -140,10 +140,18 @@ function playerCarMesh(){
+  const grade=gx*fx+gz*fz,crossGrade=-gx*fz+gz*fx;
+  const base=(car.z||0)-hazard.fall*hazard.fall*80+(activeMap.mountain||activeMap.generic?1.5:0);
+  const faces=typeof DriveArt!=='undefined'?DriveArt.carMesh(car.x,car.y,car.angle):[...cuboidMesh(car.x,car.y,42,23,12,['#d2fa60','#869e3d','#aec64e'],car.angle),...cuboidMesh(car.x-fx*3,car.y-fz*3,19,20,8,['#526c60','#314e44','#486359'],car.angle,12)];
+- for(const face of faces)face.vertices=face.vertices.map(([x,y,z])=>{
+-  const forward=(x-car.x)*fx+(z-car.y)*fz,right=-(x-car.x)*fz+(z-car.y)*fx;
+-  return[x,y+base+body.heave+forward*(grade+body.pitch)+right*(crossGrade+body.roll),z];
+- });
++ const slopeX=(grade+body.pitch)*fx-(crossGrade+body.roll)*fz;
++ const slopeZ=(grade+body.pitch)*fz+(crossGrade+body.roll)*fx;
++ for(const face of faces){
++  face.vertices=face.vertices.map(([x,y,z])=>{
++   const forward=(x-car.x)*fx+(z-car.y)*fz,right=-(x-car.x)*fz+(z-car.y)*fx;
++   return[x,y+base+body.heave+forward*(grade+body.pitch)+right*(crossGrade+body.roll),z];
++  });
++  // Inverse-transpose of the same height shear keeps lighting attached to the body.
++  if(face.normals)face.normals=face.normals.map(([x,y,z])=>{
++   const n=[x-slopeX*y,y,z-slopeZ*y],length=Math.hypot(...n)||1;return n.map(v=>v/length);
++  });
++ }
+  return faces;
+ }
+ function drawPerspective(){
+@@ -207,6 +215,7 @@ function createMountainRenderer(){
+  const surface=document.createElement('canvas');
+  const gl=surface.getContext('webgl',{alpha:true,antialias:true,premultipliedAlpha:false});
+  if(!gl)return null;
++ if(typeof DriveMaterials!=='undefined')return DriveMaterials.createRenderer(surface,gl);
+  let resources;
+  surface.addEventListener('webglcontextlost',event=>{event.preventDefault();resources=undefined});
+  surface.addEventListener('webglcontextrestored',()=>{resources=undefined});
+diff --git a/docs/REALISTIC-MATERIALS.md b/docs/REALISTIC-MATERIALS.md
+new file mode 100644
+index 0000000..207550f
+--- /dev/null
++++ b/docs/REALISTIC-MATERIALS.md
+@@ -0,0 +1,78 @@
++# GT01 vehicle and material rendering
++
++The candidate combines the GT01 vehicle from the project Page's playable
++preview with the recovered material renderer and the verification fixes. Its
++five routes, four-car race, collision geometry, input handling, clocks and score
++rules use the existing simulation.
++
++## Visual implementation
++
++`dist/car.js` contains the original procedural GT01 asset and a cached adapter
++for `DriveArt.carMesh`. Hardware renderers use LOD 1 for the player and LOD 2 for computers. Software GPU and Canvas renderers use the same asset's economy tessellation. The mesh
++includes a continuous body loft, open wheel arches, curved canopy, mirrors,
++vents, splitter, diffuser, wing, wheels and separate lamp surfaces. Smoothed
++normals follow the same body-height shear as the vertices in `playerCarMesh`.
++The visual asset does not replace collision bodies.
++
++`dist/materials.js` shades actual depth-tested geometry using GGX specular and
++Schlick Fresnel, static-world directional shadows and sky-image environment
++reflections. Those reflections approximate the environment; they are not
++ray-traced moving-car reflections. The original `dusk-sky.webp` remains a
++relative same-origin asset.
++
++Software GPU renderers use a 256-pixel maximum render-target dimension and a
++128-pixel shadow map. Other GPU renderers retain the existing resolution and
++768-pixel shadow map. This bounds software rasterization cost while preserving
++material execution, gameplay, input and camera rules. It does not establish
++hardware or physical-phone frame rates.
++
++## Verification fixes
++
++- The mountain probe compares the complete vehicle with an entirely missing
++  mesh at all 240 route positions. It retains the existing region thresholds
++  instead of comparing one shaded pixel with an unlit paint RGB value.
++- A relative `favicon.svg` removes the browser's missing-icon HTTP 404. The
++  zero-console-error assertion remains enabled.
++- The effects matrix retains all 486 paired vehicle comparisons. A redundant
++  restoration draw runs once per viewport. Transient rebounds are recorded on
++  native animation frames, still requiring actual negative velocity and impact
++  greater than 0.5.
++- The natural-race driver prepares the camera and uses the normal restart
++  button before driving. Independent keyboard events are sent together;
++  screenshot writes do not block the controller. A longer path lookahead
++  reduces steering oscillation under variable protocol latency. Physics,
++  clocks, finish conditions and the 60–90-second acceptance window are intact.
++- Flicker and camera probes restore their exact sampled image instead of
++  drawing that same pose a third time. Terrain-ray checks reject only disjoint
++  triangle bounding boxes before the unchanged intersection calculation.
++- Mountain partial-occlusion checks keep every body ray and compare the actual
++  car-only pixel mask exactly with fresh renderer resources at the same pose
++  and backend. Portrait, landscape and subpixel transitions are replayed in
++  both renderers. A tiny exposed geometric fragment can rasterize to zero
++  pixels; the fresh full-mesh reference must then agree exactly. Four positive
++  partial-pose controls must reject a missing whole mesh. Ordinary visibility
++  limits, full occlusion and actual recovery with one penalty remain required.
++
++The complete local verification passed: 32 commands, 614 screenshots,
++8 recordings and 69 matching source hashes. The normal 1000×600 keyboard race
++finished in 66.15 seconds with 3 physical AI contacts and 1011 native
++frames, saved its score and froze the finish ranking. The original cameras
++remain unchanged. [Exact acceptance scope](../verification/gt01-acceptance/acceptance.md).
++
++Observed race intervals were p50 66.6 ms and p95 100.0 ms on the shared
++software-GPU host. This is not a 60 FPS or physical-phone claim.
++
++## Publication and rollback
++
++The upstream repository connection is read-only. The user has authorized
++continuing in a fork, on `main`, with the complete verification requirements
++preserved. A fork must exist and provide write access before pushing.
++
++A commit containing `[verify only]` runs CI without deployment. A subsequent
++normal verified commit or explicit workflow dispatch can publish the same
++runtime after visual review. Deployment remains dependent on the full
++verification job. Reverting the candidate restores the prior renderer and
++vehicle; player data requires no migration.
++
++Photographic concept fidelity, physical Android/iPhone behavior and phone frame
++rates remain separate acceptance work.
+diff --git a/docs/ROADMAP.md b/docs/ROADMAP.md
+index fb202c9..5f96c99 100644
+--- a/docs/ROADMAP.md
++++ b/docs/ROADMAP.md
+@@ -55,6 +55,13 @@
+ 
+ ## P4 — Visuals and performance
+ 
++- [x] Recover the November 13 material and coupe patch on `d2182d9`; execute and inspect all 20 real material scenes, whole-car negative control and GPU loss/restoration on November 15. [Candidate and remaining boundaries](REALISTIC-MATERIALS.md).
++- [x] Replace the mountain's fixed-color single-pixel check with complete vehicle visibility at all 240 route positions and a missing-mesh negative control. All 42 mountain scenes and 51 checks pass.
++- [x] Fix the missing favicon resource and rerun all 56 cross-map checks with 76 screenshots and zero console errors. Retain all 486 effects visibility regions while removing redundant redraws; observe the real transient rebound on native frames. The complete effects command passes six collision/fall/recovery recordings and twelve screenshots.
++- [x] Integrate the GT01 procedural body, body-attached normals and bounded software-GPU render targets. Stabilize the normal keyboard driver while preserving physics, clocks, earned laps and score rules. Preserve the earlier failures as diagnostics.
++- [x] Complete frozen-source GT01 local verification: 32 commands, 614 screenshots, 8 recordings, 69 matching hashes and a 66.15-second earned three-lap race with 3 AI contacts. Original cameras remain. [Acceptance](../verification/gt01-acceptance/acceptance.md).
++- [ ] Obtain the writable fork, execute its CI and verify public deployment with identical runtime assets.
++- [ ] After the candidate passes full runtime and visual checks, publish it and rerun the complete suite against the public assets. A `[verify only]` commit runs verification without deploying.
+ - [ ] Photorealistic visual treatment remains a separate art upgrade. The delivered playable graybox has depth-tested roads, terrain, building faces, fog and a Canvas fallback; these are not a photorealism claim.
+ - [x] Verify clear feedback and reachable simultaneous controls in Chromium at 844×390, 390×844 and 320×740 across all five maps.
+ - [ ] Measure rendering performance and touch behavior on physical Android/iPhone devices. Headless viewport results do not establish real-device smoothness.
+diff --git a/docs/STATE-MACHINES.md b/docs/STATE-MACHINES.md
+index dca1e22..8e6c932 100644
+--- a/docs/STATE-MACHINES.md
++++ b/docs/STATE-MACHINES.md
+@@ -45,6 +45,19 @@ an absent/stale rendered vehicle must be distinguished in pixel verification.
+ 
+ ## Camera and body isolation
+ 
++The material-rendering candidate retains the same renderer lifecycle and camera
++pose. World faces carry optional material identifiers. The GT01 adapter caches LOD 1 player and LOD 2 computer meshes on hardware, with an economy tessellation for software renderers; visual normals receive the inverse transpose of the body-height shear. GPU identity bounds software render-target dimensions without advancing or rewriting the simulation. Its resources include
++the surface shader, a static-world shadow map and the original sky texture;
++context restoration rebuilds them before presenting a frame. Drawing does not
++advance simulation time. `browser-materials.cjs` checks the actual shader path,
++whole-car visibility and loss/restoration in addition to the existing suite.
++The mountain visibility matrix compares renders with and without the complete
++player mesh at all 240 route positions. Its missing-mesh negative control must
++produce zero changed vehicle pixels. Material lighting is not checked against
++a single unlit paint RGB value.
++The finite Rendering model remains an abstraction of resource freshness, not
++a proof of lighting, material appearance or GPU shader correctness.
++
+ `vehicleBodyPose()` derives presentation from the existing simulation state. Its
+ impact envelope uses the existing impact decay; road pulses use simulation
+ elapsed time. Drawing does not advance either. Reset/recovery clear those
+@@ -72,13 +85,20 @@ Separate complete draws must show visible vehicle feedback. The suite also
+ checks jump isolation, feedback direction and recovery. Existing normal-animation
+ driving, occlusion, flight/landing, fall/recovery and AI tests remain required.
+ 
+-The native flicker probe retains its 540 animation frames and all grounded
+-vehicle-region thresholds. An invisible falling car is accepted only when its
+-full body projection remains in view and every one of 50 vertex/face-centre
+-rays meets opaque terrain first. The probe then requires actual automatic
+-recovery and visible body pixels. Both renderers replay the captured deep-fall
+-pose. An open-road missing-mesh negative control must still fail. This
+-distinguishes legitimate terrain depth from absent or stale car rendering.
++The native flicker probe retains its 540 animation frames and all ordinary
++vehicle-region thresholds. For a terrain-hidden falling car, the full body
++projection must remain in view. Full occlusion requires every vertex/face-centre
++ray to meet opaque terrain first. Partial occlusion requires an exact car-only
++pixel-mask match against fresh renderer resources at the same frozen pose and
++backend, using the unchanged RGB-difference threshold. A tiny exposed fragment
++may cover no raster samples; its fresh reference must also produce zero pixels.
++Both cases require actual automatic recovery and visible body pixels.
++Both renderers replay the captured full falling pose, portrait and landscape
++partial poses, and the subpixel transition. Removing the entire mesh at either
++positive partial pose must yield zero pixels and fail against the fresh
++reference, as must the existing open-road missing-mesh control. This separates
++legal depth occlusion from absent or stale car rendering without inventing
++visible pixels or reducing ordinary visibility thresholds.
+ 
+ ```mermaid
+ stateDiagram-v2
+diff --git a/tests/browser-camera.cjs b/tests/browser-camera.cjs
+index 9794fa1..964b9d7 100644
+--- a/tests/browser-camera.cjs
++++ b/tests/browser-camera.cjs
+@@ -24,13 +24,13 @@ const checks=[],pictures=[],errors=[];fs.mkdirSync(out,{recursive:true});
+     start();selectView('chase');const original=playerCarMesh,frames=[];let capture;
+     setInputSource('camera-regression','gas',true);
+     for(let step=0;step<75;step++){
+-     update(.02);drawPerspective();const actual=ctx.getImageData(0,0,w,h).data;
++     update(.02);drawPerspective();const actualImage=ctx.getImageData(0,0,w,h),actual=actualImage.data;
+      try{playerCarMesh=()=>[];drawPerspective();}
+      finally{playerCarMesh=original;}
+      const blank=ctx.getImageData(0,0,w,h).data;let pixels=0;
+      for(let i=0;i<actual.length;i+=4)if(Math.abs(actual[i]-blank[i])+Math.abs(actual[i+1]-blank[i+1])+Math.abs(actual[i+2]-blank[i+2])>20)pixels++;
+      const pose=typeof perspectivePose==='function'?perspectivePose():null;
+-     drawPerspective();
++     ctx.putImageData(actualImage,0,0);
+      if(step===59)capture=canvas.toDataURL().split(',')[1];
+      frames.push({step,pixels,distance:pose?.distance,obstructed:pose?.obstructed,snapshot:gameSnapshot()});
+     }
+diff --git a/tests/browser-effects.cjs b/tests/browser-effects.cjs
+index 91e5de6..23bff4f 100644
+--- a/tests/browser-effects.cjs
++++ b/tests/browser-effects.cjs
+@@ -29,7 +29,7 @@ if(process.env.DRIVE_CHROMIUM_PATH)options.executablePath=process.env.DRIVE_CHRO
+      for(let i=0;i<withCar.length;i+=4)if(Math.abs(withCar[i]-withoutCar[i])+Math.abs(withCar[i+1]-withoutCar[i+1])+Math.abs(withCar[i+2]-withoutCar[i+2])>20){
+       const px=(i/4)%width,py=Math.floor(i/4/width);pixels++;minX=Math.min(minX,px);maxX=Math.max(maxX,px);minY=Math.min(minY,py);maxY=Math.max(maxY,py);
+      }
+-     drawPerspective();return{pixels,width:maxX-minX+1,height:maxY-minY+1};
++     return{pixels,width:maxX-minX+1,height:maxY-minY+1};
+     };
+     for(let index=0;index<N;index++){
+      const p=track[index],q=track[(index+1)%N];car.x=p.x;car.y=p.y;car.angle=Math.atan2(q.y-p.y,q.x-p.x);hazard.fall=0;
+@@ -37,10 +37,12 @@ if(process.env.DRIVE_CHROMIUM_PATH)options.executablePath=process.env.DRIVE_CHRO
+     }
+     car.y=1030;
+     for(const fall of[.2,.7,1.2]){hazard.fall=fall;results.push({fall,...region()});}
++    drawPerspective();
+     return results;
+    });
+    for(const row of rows)assert(row.pixels>100&&row.width>15&&row.height>10,JSON.stringify({viewport,...row}));
+-   checks.push({viewport,vehicleRegions:rows.length,minPixels:Math.min(...rows.map(r=>r.pixels)),passed:true});
++   checks.push({viewport,vehicleRegions:rows.length,minPixels:Math.min(...rows.map(r=>r.pixels)),regions:rows,passed:true});
++   fs.writeFileSync(path.join(out,'vehicle-regions.json'),JSON.stringify({scope:'Frozen paired vehicle renders only; native-animation acceptance is separate',complete:checks.length===sizes.length,checks},null,2)+'\n');
+    console.log('PASS',viewport.width,'whole vehicle regions across 240 headings and three falling stages');
+    await context.close();
+   }
+@@ -48,8 +50,12 @@ if(process.env.DRIVE_CHROMIUM_PATH)options.executablePath=process.env.DRIVE_CHRO
+    const name=`${viewport.width}-${view}`,context=await browser.newContext({viewport,deviceScaleFactor:1,recordVideo:{dir:out,size:viewport}}),page=await context.newPage();
+    page.on('pageerror',e=>errors.push(e.message));
+    await page.goto(base.href);await page.locator('#start').click();await page.locator(`[data-view=${view}]`).click();
+-   await page.evaluate(()=>{car.x=510;car.y=550;car.angle=0;car.speed=190;});
+-   await page.keyboard.down('w');const rebound=await (await page.waitForFunction(()=>{const s=gameSnapshot();return s.hazard.impact>.5&&s.speed<0?{speed:s.speed,impact:s.hazard.impact,elapsed:s.elapsed}:false})).jsonValue();await page.keyboard.up('w');
++   await page.evaluate(()=>{
++    window.reboundFrame=null;
++    const observe=()=>{const s=gameSnapshot();if(s.hazard.impact>.5&&s.speed<0){window.reboundFrame={speed:s.speed,impact:s.hazard.impact,elapsed:s.elapsed};return;}requestAnimationFrame(observe);};
++    requestAnimationFrame(observe);car.x=510;car.y=550;car.angle=0;car.speed=190;
++   });
++   await page.keyboard.down('w');const rebound=await (await page.waitForFunction(()=>window.reboundFrame)).jsonValue();await page.keyboard.up('w');
+    assert(rebound.speed<0&&rebound.impact>.5);
+    await page.screenshot({path:path.join(out,name+'-impact.png')});pictures.push(name+'-impact.png');
+    await page.waitForTimeout(350);
+diff --git a/tests/browser-flicker.cjs b/tests/browser-flicker.cjs
+index 6fcb41e..246c58c 100644
+--- a/tests/browser-flicker.cjs
++++ b/tests/browser-flicker.cjs
+@@ -11,6 +11,7 @@ fs.mkdirSync(out,{recursive:true});
+ 
+ async function installProbe(page){
+  await page.evaluate(()=>{
++  const referenceDraw=drawPerspective;
+   window.vehicleTerrainOcclusion=()=>{
+    const pose=perspectivePose(),cp=Math.cos(pose.pitch),sp=Math.sin(pose.pitch);
+    const points=playerCarMesh().flatMap(face=>[...face.vertices,face.vertices.reduce((sum,v)=>sum.map((n,i)=>n+v[i]/face.vertices.length),[0,0,0])]);
+@@ -25,18 +26,27 @@ async function installProbe(page){
+    const minY=Math.min(...projection.map(p=>p.y)),maxY=Math.max(...projection.map(p=>p.y));
+    const projectedBounds={minX,maxX,minY,maxY,width:maxX-minX,height:maxY-minY,
+     inFront:projection.every(p=>p.depth>4),insideViewport:minX>=0&&minY>=0&&maxX<=w&&maxY<=h};
++   const triangles=[];
++   for(let index=0;index<roadMesh.length;index++){
++    const face=roadMesh[index];if(!face.ground)continue;
++    for(let k=1;k<face.vertices.length-1;k++){
++     const [a,b,c]=[face.vertices[0],face.vertices[k],face.vertices[k+1]];
++     triangles.push({index,a,edge1:subtract(b,a),edge2:subtract(c,a),
++      min:a.map((v,i)=>Math.min(v,b[i],c[i])),max:a.map((v,i)=>Math.max(v,b[i],c[i]))});
++    }
++   }
+    let blocked=0;const blockers=new Set();
+    for(const point of points){
+     const direction=subtract(point,pose.camera);let nearestHit=1,blocker=-1;
+-    for(let index=0;index<roadMesh.length;index++){
+-     const face=roadMesh[index];if(!face.ground)continue;
+-     for(let k=1;k<face.vertices.length-1;k++){
+-      const [a,b,c]=[face.vertices[0],face.vertices[k],face.vertices[k+1]],edge1=subtract(b,a),edge2=subtract(c,a);
++    const min=point.map((v,i)=>Math.min(v,pose.camera[i])),max=point.map((v,i)=>Math.max(v,pose.camera[i]));
++    for(const {index,a,edge1,edge2,min:lower,max:upper} of triangles){
++      // A segment cannot hit a triangle with a disjoint bounding box. All rays
++      // and every potentially intersecting terrain triangle still execute.
++      if(min[0]>upper[0]+1e-6||max[0]<lower[0]-1e-6||min[1]>upper[1]+1e-6||max[1]<lower[1]-1e-6||min[2]>upper[2]+1e-6||max[2]<lower[2]-1e-6)continue;
+       const normal=cross(direction,edge2),determinant=dot(edge1,normal);if(Math.abs(determinant)<1e-8)continue;
+       const inverse=1/determinant,offset=subtract(pose.camera,a),u=inverse*dot(offset,normal);if(u<0||u>1)continue;
+       const q=cross(offset,edge1),v=inverse*dot(direction,q);if(v<0||u+v>1)continue;
+       const distance=inverse*dot(edge2,q);if(distance>1e-6&&distance<nearestHit-1e-6){nearestHit=distance;blocker=index;}
+-     }
+     }
+     if(blocker>=0){blocked++;blockers.add(blocker);}
+    }
+@@ -44,7 +54,7 @@ async function installProbe(page){
+   };
+   window.vehicleRegion=()=>{
+    const original=playerCarMesh;
+-   drawPerspective();const actual=ctx.getImageData(0,0,w,h).data;
++   drawPerspective();const actualImage=ctx.getImageData(0,0,w,h),actual=actualImage.data;
+    try{playerCarMesh=()=>[];drawPerspective();}
+    finally{playerCarMesh=original;}
+    const blank=ctx.getImageData(0,0,w,h).data;
+@@ -56,9 +66,37 @@ async function installProbe(page){
+     }
+     hash=Math.imul(hash^actual[i],16777619);hash=Math.imul(hash^actual[i+1],16777619);hash=Math.imul(hash^actual[i+2],16777619);
+    }
+-   drawPerspective();
+-   const terrainOcclusion=pixels<=100&&hazard.fall>0?vehicleTerrainOcclusion():null;
+-   return {pixels,width:maxX-minX+1,height:maxY-minY+1,hash:hash>>>0,terrainOcclusion,
++   // Restore the exact sampled image without rendering the same pose again.
++   ctx.putImageData(actualImage,0,0);
++   const lowVisibility=pixels<=100||maxX-minX+1<=15||maxY-minY+1<=10;
++   const terrainOcclusion=lowVisibility&&hazard.fall>0?vehicleTerrainOcclusion():null;
++   if(terrainOcclusion&&terrainOcclusion.blocked>0&&terrainOcclusion.blocked<terrainOcclusion.rays){
++    const currentRenderer=mountainRenderer,currentDepth=softwareDepthRenderer;
++    const backend=currentRenderer?.snapshot?.().backend==='materials'?'materials':'software';
++    let freshRenderer;
++    try{
++     // Fresh resources and the full player function independently establish
++     // the exact same-pose car mask, including subpixel terrain silhouettes.
++     mountainRenderer=backend==='materials'?createMountainRenderer():null;
++     freshRenderer=mountainRenderer;softwareDepthRenderer=undefined;playerCarMesh=original;
++     const playerFaces=playerCarMesh().length;
++     referenceDraw();const expected=ctx.getImageData(0,0,w,h).data;
++     const freshBackend=mountainRenderer?.snapshot?.().backend==='materials'?'materials':'software';
++     if(freshBackend!==backend)throw new Error('Fresh terrain reference changed rendering backend');
++     playerCarMesh=()=>[];referenceDraw();const expectedBlank=ctx.getImageData(0,0,w,h).data;
++     let expectedPixels=0,missingPixels=0,extraPixels=0;
++     for(let i=0;i<actual.length;i+=4){
++      const present=Math.abs(actual[i]-blank[i])+Math.abs(actual[i+1]-blank[i+1])+Math.abs(actual[i+2]-blank[i+2])>20;
++      const required=Math.abs(expected[i]-expectedBlank[i])+Math.abs(expected[i+1]-expectedBlank[i+1])+Math.abs(expected[i+2]-expectedBlank[i+2])>20;
++      if(required)expectedPixels++;if(required&&!present)missingPixels++;if(present&&!required)extraPixels++;
++     }
++     terrainOcclusion.rasterReference={backend,playerFaces,expectedPixels,actualPixels:pixels,missingPixels,extraPixels,maskMismatches:missingPixels+extraPixels};
++    }finally{
++     mountainRenderer=currentRenderer;softwareDepthRenderer=currentDepth;playerCarMesh=original;ctx.putImageData(actualImage,0,0);
++     freshRenderer?.surface.getContext('webgl')?.getExtension('WEBGL_lose_context')?.loseContext();
++    }
++   }
++   return {pixels,width:maxX-minX+1,height:maxY-minY+1,hash:hash>>>0,angle:car.angle,terrainOcclusion,
+     occludedCanvas:terrainOcclusion?canvas.toDataURL().split(',')[1]:undefined};
+   };
+  });
+@@ -71,9 +109,12 @@ async function picture(page,name){
+ function visible(row,label,allowTerrainOcclusion=false){
+  if(row.pixels>100&&row.width>15&&row.height>10)return 'visible';
+  const proof=row.terrainOcclusion,bounds=proof?.projectedBounds;
+- assert(allowTerrainOcclusion&&row.snapshot?.hazard.fall>0&&proof?.rays>=50&&proof.blocked===proof.rays&&
++ const fullyBlocked=!!proof&&proof.blocked===proof.rays;
++ const reference=proof?.rasterReference;
++ const partlyBlocked=proof?.blocked>0&&proof.blocked<proof.rays&&reference?.playerFaces>0&&reference.maskMismatches===0;
++ assert(allowTerrainOcclusion&&row.snapshot?.hazard.fall>0&&proof?.rays>=50&&(fullyBlocked||partlyBlocked)&&
+   bounds.inFront&&bounds.insideViewport&&bounds.width>15&&bounds.height>10,label+': '+JSON.stringify({...row,occludedCanvas:undefined}));
+- return 'terrain-occluded';
++ return fullyBlocked?'terrain-occluded':'terrain-partly-occluded';
+ }
+ function saveOccludedCanvas(row,name){
+  if(!row.occludedCanvas)return;
+@@ -112,7 +153,10 @@ function matchesFresh(difference){return difference.sameSize&&difference.mean<1&
+      return rows;
+     });
+     await page.keyboard.up('w');
+-    const occluded=frames.filter(row=>visible(row,`${map}/${viewport.width}/frame-${row.frame}`,true)==='terrain-occluded');
++    const occluded=frames.filter(row=>{
++     try{return visible(row,`${map}/${viewport.width}/frame-${row.frame}`,true)!=='visible';}
++     catch(error){saveOccludedCanvas(row,`${map}-${viewport.width}-frame-${row.frame}-failure`);throw error;}
++    });
+     if(occluded.length)saveOccludedCanvas(occluded[0],`${map}-${viewport.width}-terrain-occluded`);
+     for(const row of frames)delete row.occludedCanvas;
+     let terrainRecovery;
+@@ -124,7 +168,8 @@ function matchesFresh(difference){return difference.sameSize&&difference.mean<1&
+     }
+     assert(frames.at(-1).snapshot.elapsed>frames[0].snapshot.elapsed);
+     assert(frames.some(row=>row.snapshot.speed>5),'normal animation must actually drive');
+-    checks.push({id:`${map}/${viewport.width}/continuous-driving`,passed:true,frames,terrainOccludedFrames:occluded.length,terrainRecovery});
++    checks.push({id:`${map}/${viewport.width}/continuous-driving`,passed:true,frames,terrainOccludedFrames:occluded.length,
++     terrainPartlyOccludedFrames:occluded.filter(row=>row.terrainOcclusion.blocked<row.terrainOcclusion.rays).length,terrainRecovery});
+     console.log('PASS',map,viewport.width,'36 native animation frames;',occluded.length,'proved terrain-occluded frames; all other car frames visible');
+    }
+    for(const map of ['mountain','proving','city','offroad']){
+@@ -242,6 +287,58 @@ function matchesFresh(difference){return difference.sameSize&&difference.mean<1&
+    });
+    assert.equal(recovered.snapshot.hazard.fall,0);assert(Math.abs(recovered.penalty-5)<1e-6,'actual automatic recovery charges exactly once');
+    visible(recovered,backend+'/deep-fall-fixture-recovered');await picture(page,backend+'-deep-fall-recovered');
++   const partialFixtures=[];let subpixelFixture;
++   for(const fixture of[
++    {viewport:{width:390,height:844},car:{x:926.4300431650898,y:2918.2850743712397,z:37.65762521696776,speed:26.771953545772234,angle:-1.4838795383817158},fall:.7043000000000004,dust:.794418374795088,elapsed:4.4497999999999935},
++    {viewport:{width:844,height:390},car:{x:926.1842539668844,y:2918.042745407284,z:37.67043698252949,speed:26.532102212049033,angle:-1.4838795383817156},fall:.7110000000000002,dust:.7888803593304633,elapsed:4.466499999999994}
++   ]){
++   await page.setViewportSize(fixture.viewport);
++   await page.waitForFunction(size=>{
++    const box=canvas.getBoundingClientRect();return innerWidth===size.width&&innerHeight===size.height&&Math.abs(w-box.width)<.5&&Math.abs(h-box.height)<.5;
++   },fixture.viewport,{polling:20});
++   const partial=await page.evaluate(fixture=>{
++    selectMap('mountain');start();selectView('chase');
++    Object.assign(car,fixture.car);
++    hazard={kind:'fall',impact:0,cooldown:0,fall:fixture.fall,dust:fixture.dust};elapsed=fixture.elapsed;
++    for(let i=0;i<4;i++)vehicleRegion();
++    return{...vehicleRegion(),snapshot:gameSnapshot()};
++   },fixture);
++   assert(partial.pixels>0&&partial.pixels<=100,backend+': exact partial-fall pose must exercise the geometric visibility path');
++   assert.equal(visible(partial,backend+'/partial-fall-fixture',true),'terrain-partly-occluded');
++   saveOccludedCanvas(partial,backend+'-partial-fall-'+fixture.viewport.width);
++   const partialNegative=await page.evaluate(()=>{
++    const draw=drawPerspective,mesh=playerCarMesh;
++    try{
++     drawPerspective=()=>{try{playerCarMesh=()=>[];return draw();}finally{playerCarMesh=mesh;}};
++     for(let i=0;i<4;i++)vehicleRegion();
++     return{...vehicleRegion(),snapshot:gameSnapshot()};
++    }finally{drawPerspective=draw;playerCarMesh=mesh;}
++   });
++   delete partialNegative.occludedCanvas;
++   assert.deepEqual(partialNegative.snapshot,partial.snapshot,'same-pose negative control must preserve actual gameplay');
++   assert.equal(partialNegative.pixels,0,backend+': the whole player mesh must really be absent');
++   assert(partialNegative.terrainOcclusion.rasterReference.expectedPixels>0);
++   assert(partialNegative.terrainOcclusion.rasterReference.missingPixels>0);
++   assert.throws(()=>visible(partialNegative,backend+'/partial-fall-missing-car',true),assert.AssertionError);
++   if(fixture.viewport.width===390){
++    const region=await page.evaluate(()=>{for(let i=0;i<5;i++)update(.002);return{...vehicleRegion(),snapshot:gameSnapshot()};});
++    assert(region.pixels<=100);
++    assert.equal(visible(region,backend+'/subpixel-fall-fixture',true),'terrain-partly-occluded');
++    assert.equal(region.terrainOcclusion.rasterReference.maskMismatches,0);
++    saveOccludedCanvas(region,backend+'-subpixel-fall');
++    subpixelFixture={passed:true,region};
++   }
++   const partialRecovered=await page.evaluate(()=>{
++    const before=elapsed;let steps=0;while(hazard.fall>0&&steps<100){update(.02);steps++;}
++    return{...vehicleRegion(),snapshot:gameSnapshot(),steps,penalty:elapsed-before-steps*.02};
++   });
++   assert.equal(partialRecovered.snapshot.hazard.fall,0);assert(Math.abs(partialRecovered.penalty-5)<1e-6);
++   visible(partialRecovered,backend+'/partial-fall-recovered');await picture(page,backend+'-partial-fall-recovered-'+fixture.viewport.width);
++   if(fixture.viewport.width===390)subpixelFixture.recovered=partialRecovered;
++   partialFixtures.push({viewport:fixture.viewport,passed:true,region:partial,recovered:partialRecovered,negativeControl:{...partialNegative,rejected:true}});
++   }
++   await page.setViewportSize({width:390,height:844});
++   await page.waitForFunction(()=>Math.abs(w-canvas.getBoundingClientRect().width)<.5&&Math.abs(h-canvas.getBoundingClientRect().height)<.5,null,{polling:20});
+    const negative=await page.evaluate(()=>{
+     selectMap('circuit');start();selectView('chase');hazard.fall=.001;
+     const draw=drawPerspective,mesh=playerCarMesh;
+@@ -258,8 +355,9 @@ function matchesFresh(difference){return difference.sameSize&&difference.mean<1&
+    assert.equal(negative.pixels,0,backend+': missing-car negative control must contain no player pixels');assert(negative.terrainOcclusion.rays>=50);
+    assert(negative.terrainOcclusion.blocked<negative.terrainOcclusion.rays,'open road must not prove full terrain occlusion');
+    assert.throws(()=>visible(negative,backend+'/missing-car-negative-control',true),assert.AssertionError);
+-   occlusionFixture.push({backend,passed:true,hidden,recovered,negativeControl:{...negative,rejected:true}});
+-   console.log('PASS',backend,'exact deep-fall terrain occlusion, actual automatic recovery, open-road missing-car negative control');
++   occlusionFixture.push({backend,passed:true,hidden,recovered,negativeControl:{...negative,rejected:true},
++    partialFixtures,subpixelFixture});
++   console.log('PASS',backend,'exact full/partial terrain occlusion, actual recoveries, open-road and same-pose missing-car negative controls');
+    await context.close();
+   }
+   assert.deepEqual(errors,[]);
+@@ -267,7 +365,7 @@ function matchesFresh(difference){return difference.sameSize&&difference.mean<1&
+  finally{
+   const summary={passed:!failure,browser:browser.version(),target:base.href,checks,pictures,videos,occlusionFixture,
+    temporalFrames:checks.reduce((n,row)=>n+(row.frames?.length||0),0),consoleErrors:errors,error:failure?.message,
+-   scope:'Native animation and real keyboard drive all five maps. Context loss uses the official WebGL extension. Paused render fixtures permit per-frame car-only differential pixels without covering the image with the pause overlay. Geometry/physics are never replaced. Physical phones are not tested.'};
++   scope:'Native animation and real keyboard drive all five maps. Context loss uses the official WebGL extension. Paused fixtures compare actual car-only pixels and ground-ray projections. Whole player meshes are deliberately removed for differential measurements and negative controls; track geometry and physics stay intact. Physical phones are not tested.'};
+   fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(summary,null,2)+'\n');
+   await browser.close();
+  }
+diff --git a/tests/browser-materials.cjs b/tests/browser-materials.cjs
+new file mode 100644
+index 0000000..31f7faa
+--- /dev/null
++++ b/tests/browser-materials.cjs
+@@ -0,0 +1,70 @@
++const { chromium } = require('playwright');
++const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
++assert(process.env.DRIVE_URL, 'Use tests/verify.py to serve the real game assets');
++const url = process.env.DRIVE_URL, out = path.resolve(process.env.DRIVE_VERIFY_DIR || 'verification/latest', 'materials');
++const options = { headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader'] };
++if (process.env.DRIVE_CHROMIUM_PATH) options.executablePath = process.env.DRIVE_CHROMIUM_PATH;
++const scenes = [], pictures = [], errors = [];
++fs.mkdirSync(out, { recursive: true });
++
++(async () => {
++ const browser = await chromium.launch(options);let result, failure;
++ try {
++  const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
++  await context.addInitScript(() => { window.requestAnimationFrame = () => 0; });
++  const page = await context.newPage();page.on('pageerror', error => errors.push(error.message));
++  await page.goto(url);await page.waitForLoadState('networkidle');
++  for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
++   await page.setViewportSize(viewport);
++   for (const map of ['circuit', 'mountain', 'proving', 'city', 'offroad']) for (const view of ['first', 'chase']) {
++    const scene = await page.evaluate(({ map, view }) => {
++     selectMap(map);start();selectView(view);
++     const before = gameSnapshot();draw();const after = gameSnapshot();
++     return { before, after, renderer: mountainRenderer?.snapshot?.() };
++    }, { map, view });
++    assert.deepEqual(scene.after, scene.before, 'Material drawing must not advance or rewrite the race');
++    assert.equal(scene.renderer?.backend, 'materials', JSON.stringify(scene.renderer));
++    assert.equal(scene.renderer.failure, null);assert(scene.renderer.draws > 0);
++    const name = `${map}-${view}-${viewport.width}.png`;
++    await page.screenshot({ path: path.join(out, name) });pictures.push(name);
++    scenes.push({ map, view, viewport, renderer: scene.renderer });
++    console.log('PASS material scene', map, view, viewport.width);
++   }
++  }
++  await page.setViewportSize({ width: 844, height: 390 });
++  const negativeControl = await page.evaluate(() => {
++   selectMap('circuit');start();selectView('chase');drawPerspective();
++   const actual = ctx.getImageData(0, 0, w, h).data, mesh = playerCarMesh;
++   try {
++    playerCarMesh = () => [];drawPerspective();const blank = ctx.getImageData(0, 0, w, h).data;
++    let pixels = 0;for (let i = 0; i < actual.length; i += 4) if (Math.abs(actual[i] - blank[i]) + Math.abs(actual[i + 1] - blank[i + 1]) + Math.abs(actual[i + 2] - blank[i + 2]) > 20) pixels++;
++    return { pixels };
++   } finally { playerCarMesh = mesh;draw(); }
++  });
++  assert(negativeControl.pixels > 100, 'Removing the entire car must remove visible car pixels');
++  const beforeLoss = await page.evaluate(() => gameSnapshot());
++  await page.evaluate(() => {
++   window.materialLoss = mountainRenderer.surface.getContext('webgl').getExtension('WEBGL_lose_context');
++   if (!materialLoss) throw Error('Context-loss extension required for renderer lifecycle acceptance');
++   materialLoss.loseContext();
++  });
++  await page.waitForFunction(() => mountainRenderer.surface.getContext('webgl').isContextLost());
++  await page.evaluate(() => draw());
++  assert.deepEqual(await page.evaluate(() => gameSnapshot()), beforeLoss, 'GPU loss must preserve the current race');
++  await page.screenshot({ path: path.join(out, 'context-loss-fallback.png') });pictures.push('context-loss-fallback.png');
++  await page.evaluate(() => materialLoss.restoreContext());
++  await page.waitForFunction(() => !mountainRenderer.surface.getContext('webgl').isContextLost());
++  await page.evaluate(() => draw());
++  const restored = await page.evaluate(() => mountainRenderer.snapshot());
++  assert.equal(restored.backend, 'materials');assert.equal(restored.failure, null);
++  assert.deepEqual(await page.evaluate(() => gameSnapshot()), beforeLoss, 'GPU restoration must preserve the race');
++  assert.deepEqual(errors, []);
++  await page.screenshot({ path: path.join(out, 'context-restored.png') });pictures.push('context-restored.png');
++  result = { passed: true, browser: browser.version(), source: url, scenes, pictures, negativeControl,
++   contextRestored: true, fallbackPreservesGame: true, errors,
++   scope: 'Actual WebGL material and shadow shaders, all five maps, two cameras, landscape and portrait. Frozen scene inputs; the full suite separately requires ordinary native-animation driving and a legal three-lap finish. No physical phone or photographic parity claim.' };
++  await context.close();
++ } catch (error) { failure = error;result = { passed: false, error: error.message, scenes, pictures, errors }; }
++ finally { fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(result, null, 2) + '\n');await browser.close(); }
++ if (failure) throw failure;
++})().catch(error => { console.error(error);process.exitCode = 1; });
+diff --git a/tests/browser-mountain.cjs b/tests/browser-mountain.cjs
+index c466085..85cc16d 100644
+--- a/tests/browser-mountain.cjs
++++ b/tests/browser-mountain.cjs
+@@ -52,19 +52,34 @@ async function fixture(page,view,setup){return page.evaluate(({view,setup})=>{
+    });
+   }
+   await page.setViewportSize({width:844,height:390});
+-  await check('all 240 mountain chase headings keep rear deck visible above road',async()=>{
++  await check('all 240 mountain chase headings retain a visible whole vehicle',async()=>{
+    await fixture(page,'chase','');
+-   const failures=await page.evaluate(()=>{
+-    const failures=[];for(let i=0;i<N;i++){
++   const visibility=await page.evaluate(()=>{
++    const probe=()=>{
++     const mesh=playerCarMesh;
++     drawPerspective();const actual=ctx.getImageData(0,0,w,h).data;
++     try{
++      playerCarMesh=()=>[];drawPerspective();const blank=ctx.getImageData(0,0,w,h).data;
++      let pixels=0,minX=w,minY=h,maxX=-1,maxY=-1;
++      for(let k=0;k<actual.length;k+=4)if(Math.abs(actual[k]-blank[k])+Math.abs(actual[k+1]-blank[k+1])+Math.abs(actual[k+2]-blank[k+2])>20){
++       const x=(k/4)%w,y=Math.floor(k/4/w);pixels++;minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);
++      }
++      return {pixels,width:Math.max(0,maxX-minX+1),height:Math.max(0,maxY-minY+1)};
++     }finally{playerCarMesh=mesh;}
++    };
++    const rows=[];for(let i=0;i<N;i++){
+      const p=track[i],a=track[Math.max(0,i-1)],b=track[Math.min(N-1,i+1)];car.x=p.x;car.y=p.y;car.z=p.z;car.angle=Math.atan2(b.y-a.y,b.x-a.x);
+-     const pose=perspectivePose(),[fx,fz]=pose.forward,{grade,pitch,focal,horizon}=pose;
+-     const forward=pose.distance-17,dy=car.z+13.5-17*grade-pose.camera[1];
+-     drawPerspective();const x=Math.round(w/2),y=Math.round(horizon-(dy*Math.cos(pitch)+forward*Math.sin(pitch))*focal/(forward*Math.cos(pitch)-dy*Math.sin(pitch)));
+-     const rgb=Array.from(ctx.getImageData(x,y,1,1).data).slice(0,3);
+-     const expected=DriveArt.playerColors[0].slice(1).match(/../g).map(pair=>parseInt(pair,16));
+-     if(rgb.some((v,k)=>Math.abs(v-expected[k])>3))failures.push({index:i,rgb,x,y});
+-    }return failures;
+-   });assert.deepEqual(failures,[]);
++     rows.push({index:i,...probe()});
++    }
++    const mesh=playerCarMesh;let negativeControl;
++    try{playerCarMesh=()=>[];negativeControl=probe();}
++    finally{playerCarMesh=mesh;drawPerspective();}
++    return {rows,negativeControl};
++   });
++   fs.writeFileSync(path.join(out,'vehicle-visibility.json'),JSON.stringify(visibility,null,2)+'\n');
++   assert.equal(visibility.rows.length,240);
++   assert.deepEqual(visibility.rows.filter(row=>row.pixels<=100||row.width<=15||row.height<=10),[]);
++   assert.equal(visibility.negativeControl.pixels,0,'Removing the complete mesh must fail the visibility probe');
+   });
+   await check('new UI starts and actual keyboard gas moves uphill',async()=>{
+    await page.reload();await page.locator('#start').click();const before=await page.evaluate(()=>gameSnapshot());
+diff --git a/tests/browser-slice.cjs b/tests/browser-slice.cjs
+index f7659fc..257d95e 100644
+--- a/tests/browser-slice.cjs
++++ b/tests/browser-slice.cjs
+@@ -7,34 +7,34 @@ const options={headless:true,args:['--no-sandbox','--disable-dev-shm-usage']};
+ if(process.env.DRIVE_CHROMIUM_PATH)options.executablePath=process.env.DRIVE_CHROMIUM_PATH;
+ (async()=>{
+  const browser=await chromium.launch(options),context=await browser.newContext({viewport:{width:1000,height:600},deviceScaleFactor:1,recordVideo:{dir:out,size:{width:1000,height:600}}});
+- const page=await context.newPage(),errors=[],samples=[],laps=[],keys=new Set(),pictures=[];let failure,result;
++ const page=await context.newPage(),errors=[],samples=[],laps=[1],keys=new Set(),pictures=[],captures=[];let failure,result;
+  page.on('pageerror',e=>errors.push(e.message));
+  const key=async(name,down)=>{if(down&&!keys.has(name)){await page.keyboard.down(name);keys.add(name)}else if(!down&&keys.has(name)){await page.keyboard.up(name);keys.delete(name)}};
++ const picture=name=>{pictures.push(name);const capture=page.screenshot({path:path.join(out,name),type:'jpeg',quality:80});capture.catch(()=>{});captures.push(capture);};
+  try{
+-  await page.goto(url.href);await page.click('#start');await page.click('[data-view=chase]');
++  await page.goto(url.href);await page.click('#start');await page.click('[data-view=chase]');await page.click('#reset');
+   await page.evaluate(()=>{window.sliceFrameTimes=[];let previous;const observe=t=>{if(previous!==undefined)sliceFrameTimes.push(t-previous);previous=t;if(gameSnapshot().state==='running')requestAnimationFrame(observe)};requestAnimationFrame(observe)});
+-  const start=Date.now();let integral=0,lastLap=0,contactPicture=false,steeringSign=0;
+-  await page.screenshot({path:path.join(out,'01-start.jpg'),type:'jpeg',quality:80});pictures.push('01-start.jpg');
++  const start=Date.now();let integral=0,lastLap=1,contactPicture=false,steeringSign=0;
++  await key('w',true);picture('01-start.jpg');
+   while(Date.now()-start<100000){
+    const s=await page.evaluate(()=>{
+-    const n=nearest(car.x,car.y);let remaining=55,index=n.index;
++    const n=nearest(car.x,car.y);let remaining=110,index=n.index;
+     while(remaining>0){const a=track[index],b=track[(index+1)%N];remaining-=Math.hypot(b.x-a.x,b.y-a.y);index=(index+1)%N;}
+     const target=track[index],angle=Math.atan2(target.y-car.y,target.x-car.x);
+     let error=angle-car.angle;while(error>Math.PI)error-=TAU;while(error< -Math.PI)error+=TAU;
+     return{snapshot:gameSnapshot(),angle:car.angle,steer:car.steer,error,distance:Math.hypot(target.x-car.x,target.y-car.y),surfaceDistance:n.distance,presentation:presentationSnapshot()};
+    });
+    const g=s.snapshot;
+-   if(g.lap!==lastLap){lastLap=g.lap;laps.push(g.lap);const name=`0${g.lap+1}-lap-${g.lap}.jpg`;await page.screenshot({path:path.join(out,name),type:'jpeg',quality:80});pictures.push(name)}
+-   if(g.racers.playerContacts>0&&!contactPicture){const name='04-real-contact.jpg';await page.screenshot({path:path.join(out,name),type:'jpeg',quality:80});pictures.push(name);contactPicture=true;}
++   if(g.lap!==lastLap){lastLap=g.lap;laps.push(g.lap);picture(`0${g.lap+1}-lap-${g.lap}.jpg`)}
++   if(g.racers.playerContacts>0&&!contactPicture){picture('04-real-contact.jpg');contactPicture=true;}
+    if(!samples.length||g.elapsed-samples.at(-1).game.elapsed>=.25)samples.push({wallMs:Date.now()-start,game:g,controller:{error:s.error,surfaceDistance:s.surfaceDistance},presentation:s.presentation});
+    if(g.state==='finished')break;
+    assert.equal(g.state,'running');assert.equal(g.hazard.fall,0,'driver must stay on the real circuit');
+    const desired=Math.max(-1,Math.min(1,2*Math.sin(s.error)*155*(1+Math.abs(g.speed)/650)/Math.max(20,s.distance)));
+    const sign=Math.sign(desired);if(sign!==steeringSign){integral=0;steeringSign=sign}
+    integral+=Math.abs(desired);const steering=integral>=1;if(steering)integral-=1;
+-   await key('a',steering&&desired<0);await key('d',steering&&desired>0);
+    const target=g.elapsed<4?220:122;
+-   await key('w',g.speed<target);await key('Space',g.speed>target+18);
++   await Promise.all([key('a',steering&&desired<0),key('d',steering&&desired>0),key('w',g.speed<target),key('Space',g.speed>target+18)]);
+    await page.waitForTimeout(32);
+   }
+   for(const name of [...keys])await key(name,false);
+@@ -47,6 +47,7 @@ if(process.env.DRIVE_CHROMIUM_PATH)options.executablePath=process.env.DRIVE_CHRO
+   assert(samples.some(s=>s.game.racers.actors.some(a=>a.progress>240)),'competitors must actually race');
+   const frozen=await page.evaluate(()=>gameSnapshot());await page.waitForTimeout(250);assert.deepEqual(await page.evaluate(()=>gameSnapshot()),frozen,'finish must freeze gameplay and ranking');
+   assert.deepEqual(errors,[]);assert(final.frames.length>500,'native animation must run throughout');
++  await Promise.all(captures);
+   await page.screenshot({path:path.join(out,'05-natural-finish.jpg'),type:'jpeg',quality:80});pictures.push('05-natural-finish.jpg');
+   const sorted=final.frames.filter(t=>t>0).sort((a,b)=>a-b),quantile=p=>sorted[Math.floor((sorted.length-1)*p)];
+   result={passed:true,browser:browser.version(),source:url.href,animation:'native requestAnimationFrame; normal keyboard input; read-only route observations; no teleports, finish calls or clock overrides',raceSeconds:final.game.elapsed,wallSeconds:(Date.now()-start)/1000,laps,contacts:final.game.racers.playerContacts,events:final.presentation.events,frames:final.frames.length,frameMs:{p50:quantile(.5),p95:quantile(.95),max:sorted.at(-1)},final:final.game,pictures,errors,physicalPhone:false};
+diff --git a/tests/verify.py b/tests/verify.py
+index 921b3bf..eede456 100644
+--- a/tests/verify.py
++++ b/tests/verify.py
+@@ -6,6 +6,7 @@ from pathlib import Path
+ import subprocess
+ import sys
+ import threading
++import time
+ from functools import partial
+ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+ from datetime import datetime, timezone
+@@ -45,7 +46,7 @@ def main():
+     env = dict(os.environ, DRIVE_URL=target, DRIVE_MOUNTAIN_URL=mountain_url, DRIVE_MOUNTAIN_EVIDENCE=str(OUT / 'mountain'),
+                DRIVE_CAPTURE='1', DRIVE_VERIFY_DIR=str(OUT),
+                DRIVE_EVIDENCE_DIR=str(OUT / 'browser-states'))
+-    commands = [['node', '--check', 'dist/' + p] for p in ['maps.js', 'course-pack.js', 'course-world.js', 'racers.js', 'game.js', 'art.js', 'perspective.js', 'presentation.js']] + [
++    commands = [['node', '--check', 'dist/' + p] for p in ['maps.js', 'course-pack.js', 'course-world.js', 'racers.js', 'game.js', 'car.js', 'art.js', 'materials.js', 'perspective.js', 'presentation.js']] + [
+                 ['node', 'tests/drive.cjs'], ['node', 'tests/mountain.cjs'],
+                 ['node', 'tests/course-pack.cjs'], ['node', 'tests/courses.cjs'], ['node', 'tests/state-contract.cjs'],
+                 ['node', 'tests/hidden-state-contract.cjs'], ['node', 'tests/racers.cjs'],
+@@ -53,15 +54,26 @@ def main():
+                 ['node', 'tests/browser-mountain.cjs'], ['node', 'tests/browser-courses.cjs'], ['node', 'tests/browser-effects.cjs'],
+                 ['node', 'tests/browser-flicker.cjs'], ['node', 'tests/browser-camera.cjs'], ['node', 'tests/browser-body-camera.cjs'],
+                 [sys.executable, 'tests/browser_e2e.py'], ['node', 'tests/browser-racers.cjs'],
+-                ['node', 'tests/browser-presentation.cjs'], ['node', 'tests/browser-concept.cjs'], ['node', 'tests/browser-sky.cjs'], ['node', 'tests/browser-slice.cjs']]
++                ['node', 'tests/browser-presentation.cjs'], ['node', 'tests/browser-concept.cjs'], ['node', 'tests/browser-sky.cjs'], ['node', 'tests/browser-materials.cjs'], ['node', 'tests/browser-slice.cjs']]
+     try:
+         for index, command in enumerate(commands):
+             print('RUN', ' '.join(command), flush=True)
+-            result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
++            started = time.monotonic()
++            try:
++                result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
++            except subprocess.TimeoutExpired as error:
++                output = (error.stdout or b'') + (error.stderr or b'')
++                if isinstance(output, bytes):
++                    output = output.decode('utf-8', errors='replace')
++                (OUT / f'{index+1:02d}.log').write_text(output)
++                summary['steps'].append({'command': command, 'exitCode': None, 'timedOut': True,
++                                         'seconds': round(time.monotonic() - started, 3), 'timeoutSeconds': 300})
++                raise RuntimeError('Verification timed out after 300 seconds: ' + ' '.join(command)) from error
+             text = result.stdout + result.stderr
+             (OUT / f'{index+1:02d}.log').write_text(text)
+             print(text, end='', flush=True)
+-            summary['steps'].append({'command': command, 'exitCode': result.returncode})
++            summary['steps'].append({'command': command, 'exitCode': result.returncode,
++                                     'seconds': round(time.monotonic() - started, 3)})
+             if result.returncode:
+                 raise RuntimeError('Verification failed: ' + ' '.join(command))
+         matrix = json.loads((OUT / 'browser-states/results.json').read_text())
+@@ -92,10 +104,28 @@ def main():
+             assert row['passed'] and row['hidden']['pixels'] <= 100
+             assert row['recovered']['snapshot']['hazard']['fall'] == 0
+             assert row['negativeControl']['rejected']
++            assert len(row['partialFixtures']) == 2
++            assert {fixture['viewport']['width'] for fixture in row['partialFixtures']} == {390, 844}
++            for partial_fixture in row['partialFixtures']:
++                assert partial_fixture['passed'] and 0 < partial_fixture['region']['pixels'] <= 100
++                proof = partial_fixture['region']['terrainOcclusion']
++                assert 0 < proof['blocked'] < proof['rays']
++                reference = proof['rasterReference']
++                assert reference['playerFaces'] > 0 and reference['expectedPixels'] > 0
++                assert reference['maskMismatches'] == 0 and reference['expectedPixels'] == partial_fixture['region']['pixels']
++                assert partial_fixture['recovered']['snapshot']['hazard']['fall'] == 0
++                assert partial_fixture['negativeControl']['rejected'] and partial_fixture['negativeControl']['pixels'] == 0
++            subpixel_fixture = row['subpixelFixture']
++            assert subpixel_fixture['passed'] and subpixel_fixture['region']['pixels'] <= 100
++            assert subpixel_fixture['region']['terrainOcclusion']['rasterReference']['maskMismatches'] == 0
++            assert subpixel_fixture['recovered']['snapshot']['hazard']['fall'] == 0
++        assert any(row['subpixelFixture']['region']['pixels'] == 0 for row in flicker['occlusionFixture'])
+         assert all((OUT / 'flicker' / name).is_file() for name in flicker['pictures'])
+         summary['temporalFrames'] = flicker['temporalFrames']
+         summary['flickerChecks'] = len(flicker['checks'])
+         summary['terrainOcclusionFixtures'] = len(flicker['occlusionFixture'])
++        summary['partialTerrainOcclusionFixtures'] = sum(len(row['partialFixtures']) for row in flicker['occlusionFixture'])
++        summary['subpixelTerrainOcclusionFixtures'] = len(flicker['occlusionFixture'])
+         summary['screenshots'] += len(flicker['pictures'])
+         camera = json.loads((OUT / 'camera/results.json').read_text())
+         assert camera['passed'] and camera['fixtureFrames'] == 450 and len(camera['checks']) == 6
+@@ -136,6 +166,14 @@ def main():
+         assert all(row['differentPixelRatio'] > .1 for row in sky['checks'])
+         assert all((OUT / 'sky' / name).is_file() for row in sky['checks'] for name in row['pictures'])
+         summary['skyChecks'] = len(sky['checks'])
++        materials = json.loads((OUT / 'materials/results.json').read_text())
++        assert materials['passed'] and len(materials['scenes']) == 20
++        assert all(row['renderer']['backend'] == 'materials' for row in materials['scenes'])
++        assert materials['negativeControl']['pixels'] > 100
++        assert materials['contextRestored'] and materials['fallbackPreservesGame']
++        assert all((OUT / 'materials' / name).is_file() for name in materials['pictures'])
++        summary['materialScenes'] = len(materials['scenes'])
++        summary['screenshots'] += len(materials['pictures'])
+         summary['screenshots'] += sum(len(row['pictures']) for row in sky['checks'])
+         summary['conceptChecks'] = len(concept['checks'])
+         summary['screenshots'] += len(concept['pictures'])
+diff --git a/verification/formal-verification.md b/verification/formal-verification.md
+index 81adaea..7783ad2 100644
+--- a/verification/formal-verification.md
++++ b/verification/formal-verification.md
+@@ -1,5 +1,7 @@
+ # State-machine and TLA+ verification
+ 
++The GT01 frozen-source local acceptance on 2026-11-15 passed all 32 commands, 12 models and 31 expected counterexamples. See [current GT01 acceptance](gt01-acceptance/acceptance.md) and its 69 source hashes. GitHub CI and deployment remain unexecuted for this candidate.
++
+ The latest camera/body release and its exact acceptance scope are tracked in [camera stability and vehicle feedback](camera-verification.md). Computer-team evidence is retained in [computer teammates and rivals](teams-verification.md). The earlier sections below retain their original release evidence.
+ 
+ Date: 2026-11-09. Full project `/verify`: **PASS** on the authorized Mac mini,
+diff --git a/verification/gt01-acceptance/acceptance.md b/verification/gt01-acceptance/acceptance.md
+new file mode 100644
+index 0000000..0324210
+--- /dev/null
++++ b/verification/gt01-acceptance/acceptance.md
+@@ -0,0 +1,24 @@
++# GT01 local acceptance — 2026-11-15
++
++The complete `.venv/bin/python tests/verify.py` entry passed on the frozen working tree based on `d2182d9`. All 69 recorded source hashes still match. The machine-readable [result](results.json) preserves the tested hashes and every command's exit status and elapsed time; local executable paths are normalized for publication. Full raw logs and captures are backed up in the project Page.
++
++| Check | Actual result |
++| --- | --- |
++| Complete entry | 32 commands, every exit code 0, no skipped command |
++| Formal models | 12 exhaustive TLC models, 1,089,456 distinct states; 31 expected named counterexamples detected |
++| Browser evidence | 614 screenshots and 8 real-animation recordings |
++| Vehicle visibility | 486 paired regions; whole-player missing-mesh controls retained |
++| Native flicker and resource recovery | 540 native frames, 27 checks, two full-occlusion fixtures, four positive partial fixtures and two subpixel transitions |
++| Camera | 450 actual physics frames across WebGL/Canvas and three sizes; original cameras retained |
++| Python browser E2E | 30 actual-animation/input checks and 40 screenshots |
++| Computer cars | 93 checks, 61 screenshots and one native-animation recording |
++| Material shaders | 20 scenes over five maps, first/chase views and two orientations; real shader execution and context recovery |
++| Earned three-lap race | 66.15 seconds, 3 physical AI contacts, 1011 native frames; saved score and frozen finish ranking |
++
++The browser was Chromium 156.0.8078.79 with Python/JavaScript Playwright 1.51.0. Software GPU rendering uses the actual material shader at the economy profile; the separate Canvas depth fallback also executes. The observed race frame intervals were p50 66.6 ms and p95 100.0 ms on the shared host. These measurements do not establish 60 FPS or physical-phone performance.
++
++The mountain partial-occlusion regression compares the exact car-only mask with fresh renderer resources at the same pose/backend, preserving the RGB difference threshold and all ordinary area/width/height limits. All four positive partial poses reject a deliberately missing whole player mesh. Zero-pixel subpixel poses must agree with a fresh full-mesh reference. Automatic recovery, exactly one five-second penalty and visible recovery remain required. A supplemental 180-step boundary sweep passed in both renderers and all three sizes.
++
++Visual review covered the 20 material scenes plus fallback/restoration, all six camera beam captures, both orientations/backends of body feedback, and actual sampled frames from all six impact/fall/recovery recordings. Native race/AI recordings and their final screenshots are retained with the Page evidence. Original camera behavior, simulation, input handling, score rules and recovery timing are preserved.
++
++This is local acceptance. GitHub fork creation, GitHub Actions and deployment have not executed: the connected account can write existing repositories, but the available GitHub MCP has no fork/create-repository method. Physical Android/iPhone behavior, physical-device frame rates and photographic concept fidelity remain separate work. A `[verify only]` commit keeps deployment gated while CI is obtained.
+diff --git a/verification/gt01-acceptance/results.json b/verification/gt01-acceptance/results.json
+new file mode 100644
+index 0000000..84a5e02
+--- /dev/null
++++ b/verification/gt01-acceptance/results.json
+@@ -0,0 +1,367 @@
++{
++  "createdAt": "2026-11-15T04:12:21.094653+00:00",
++  "passed": true,
++  "steps": [
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/maps.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.059
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/course-pack.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.037
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/course-world.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.07
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/racers.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.032
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/game.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.031
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/car.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.036
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/art.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.03
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/materials.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.029
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/perspective.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.032
++    },
++    {
++      "command": [
++        "node",
++        "--check",
++        "dist/presentation.js"
++      ],
++      "exitCode": 0,
++      "seconds": 0.032
++    },
++    {
++      "command": [
++        "node",
++        "tests/drive.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 1.679
++    },
++    {
++      "command": [
++        "node",
++        "tests/mountain.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 5.757
++    },
++    {
++      "command": [
++        "node",
++        "tests/course-pack.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 0.115
++    },
++    {
++      "command": [
++        "node",
++        "tests/courses.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 44.586
++    },
++    {
++      "command": [
++        "node",
++        "tests/state-contract.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 0.738
++    },
++    {
++      "command": [
++        "node",
++        "tests/hidden-state-contract.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 2.09
++    },
++    {
++      "command": [
++        "node",
++        "tests/racers.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 60.724
++    },
++    {
++      "command": [
++        ".venv/bin/python",
++        "tests/verify_tla.py"
++      ],
++      "exitCode": 0,
++      "seconds": 158.827
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-states.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 55.045
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-mountain.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 21.068
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-courses.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 70.417
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-effects.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 62.152
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-flicker.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 207.488
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-camera.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 34.466
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-body-camera.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 17.102
++    },
++    {
++      "command": [
++        ".venv/bin/python",
++        "tests/browser_e2e.py"
++      ],
++      "exitCode": 0,
++      "seconds": 76.858
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-racers.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 200.658
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-presentation.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 10.476
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-concept.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 10.394
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-sky.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 40.599
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-materials.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 8.04
++    },
++    {
++      "command": [
++        "node",
++        "tests/browser-slice.cjs"
++      ],
++      "exitCode": 0,
++      "seconds": 70.353
++    }
++  ],
++  "revision": "d2182d91ea8e4e93040567b0039cabf6d4cf040b",
++  "worktreeDirty": true,
++  "sourceSha256": {
++    ".agents/skills/verify/SKILL.md": "03cb15767e89e756593b9d1058242e9654218b9998d0548624c79b0abc397e31",
++    ".github/workflows/pages.yml": "dae2d0392bef9b90e6322e028e54e4dbfd3c620bdcf709f0a999c2812ca0ebc0",
++    "dist/art.js": "bf040cc15ba00e3c961203df8863197658f54efd170fdd4b17b88b8b644f13d1",
++    "dist/car.js": "5958d0731fca0e13282ecc30e5ecfd76376254012e0dc6f946f2cfb783b4af34",
++    "dist/concept.css": "fa873ead0c4562dd02f8b534d23043c898d8c3ca51bcb0847044b678a1aed550",
++    "dist/course-pack.js": "bd28fd470463260f22a7b2af4e77a64ee3c19d070f1bc6406b1da514e45a7b87",
++    "dist/course-world.js": "e815d06683e1e0b3b79ec7c6a579b7e8e73c07ddb401bf8816c12c761dbf2238",
++    "dist/dusk-sky.webp": "4c2ca601f04b9d7a6bafec2a0870051ccaf1192745b45ecac39e64eaa89eaefe",
++    "dist/favicon.svg": "ae5d525e3479d40e8661f5d5a30f714103caff84706477425e4d86df1d32498d",
++    "dist/game.js": "8ae403e8c1eb458bd5f373223c0d81474fa1f73017d1dbba7cc2f595b1ab72e8",
++    "dist/index.html": "9d9910a2d4ecfa1f94a6b592f7d971cfb2e3c5ecb2d4ca1c5287963a38717b62",
++    "dist/maps.js": "f5b676fa8d8f784ecf3c2455875c49937bd1f2c46e026ca7c0c6e1a6ec742299",
++    "dist/materials.js": "8e99182463d658b041823fba317d9c6e339cc1e1b3a2d92f3d0b519d080b3473",
++    "dist/perspective.js": "d6c2bb2ae80429cb6b4364822b9c5665c76459eb673f7b2e4cf4d7e707a5aa3c",
++    "dist/presentation.js": "66d37396a0dccbb41f8e6b962894fe1633e72372dbe11688dd89d4ca6224e72b",
++    "dist/racers.js": "3543ff246b66b908bc77c0e3b0399b623002a573dba1ea77246d0bb0e0f1794f",
++    "dist/style.css": "c0f8b164506d413d13b77532bc8739b151cef63e560d1c1f98af4e15484f7989",
++    "package-lock.json": "d7fb1ffb112245f2b007ad0bccf71af1bd1eebe90e8aa1b6305d8af7a8da9536",
++    "package.json": "84ce6881d1e1b2cc6b1ed49f98557cd1a472d88835205d442c3a537a479d4600",
++    "specs/CameraFeedback.cfg": "b7cded30516516c40b3bdafed476fde54d7b7d79746014fbfb24d8eb0665634f",
++    "specs/CameraFeedback.tla": "0d9cf9cabe4aa69fa8b8d82da4c8f2e27a6919b5781e544c44ca786f49134c4e",
++    "specs/Competitors.cfg": "d51ad16c3e5e65a234d208db02d3b03a43ad058983c209b8831eb78d4079be9e",
++    "specs/Competitors.tla": "fc9daa7a1ed12b910bda1e10706ad490189d29b79ed2b8adfdf020569676166d",
++    "specs/CompetitorsRace.cfg": "f4dc3b372ced6ce1e556eb860305cf97233cd2c565176b808fdae87b2d4134f6",
++    "specs/CompetitorsRace.tla": "a348a745959e42f7062f7076dc6cc7312e601532f45a7d517e96d64d9e89b824",
++    "specs/Courses.cfg": "c0dbeb5ceec01ba22994efdae749893b451171ea4bbf067b7f0337e145926a36",
++    "specs/Courses.tla": "69e08b63d038f70b54ae4ebbc20c681281308ef79252116a861b4c49b4585b34",
++    "specs/Hazards.cfg": "f05f54257ffef63c55e07aea93028ade3686c2519238039d61278b895e03d7e0",
++    "specs/Hazards.tla": "fe7a8448fe550a17fee4691f320f158c30d955bef068008372aac9046f951e35",
++    "specs/Input.cfg": "fa96765ce7e859bfd48861ab923c4697944b90bdf6d2c807d2dfaade79753071",
++    "specs/Input.tla": "6d145cbff97c3da7e32d1a01b96083f042c06850a32dc0eb58679b3e444c4446",
++    "specs/Mountain.cfg": "e53210cfcb4588cc2949f19d2dbcdb83c28dc4f03808961f7f0581ce6efed8e1",
++    "specs/Mountain.tla": "dfe67f114f8841eb35e758f7c68b8ca44d87891f73681013bf9269e6bcf6efe6",
++    "specs/Persistence.cfg": "90291c3002321e34d3e0936ce5ec36c9a683c74f90479c92a4436bc86e48f11a",
++    "specs/Persistence.tla": "7fd52d50041a2f8d7e4636e326d67e31eeddcfc9241264777aeb8679899fb2eb",
++    "specs/Presentation.cfg": "e69ea6df973cc8a0b1719f0416b555d8c9c804aec3f25589f0e42499e71c40c3",
++    "specs/Presentation.tla": "433f29215862fdafbc3fa33749e01cc550121d33d8e69d2758727fe20f4a7500",
++    "specs/Race.cfg": "78acd830ab7245abd95ab35b7fb55f66af20d4fcc492dc38f0d1b057d6c97561",
++    "specs/Race.tla": "bb78c1d231bfdc4f114d5b90b5998c7335669d5f7d80cf8544749f7f69ace096",
++    "specs/Rendering.cfg": "9604a481653876240297ce37ba0c81179bba8ceef068c0f298c186e5b15593a3",
++    "specs/Rendering.tla": "8ea4b60f5bd9bab6ed365ccbed06387d6e27ceabe3a86e1d9cbac4a26edec988",
++    "specs/VehicleWorld.cfg": "b4935a69e5ad1170c1bb450d3c33e9efaae29988980273ad4839d55f1979bf51",
++    "specs/VehicleWorld.tla": "ffe2b22e0638564b3a8d4e50d8ef65b15c4e23ab45c4e8fd52b508c4d0019087",
++    "tests/browser-body-camera.cjs": "055ff3aefff3084e6f80e3ff53c260f61d3530f21f9bff83a8b7c16a955747ff",
++    "tests/browser-camera.cjs": "684d1845c4bcea9a66f32426427371a2aa04193cd0fbac7e8757a8c4bc1fb160",
++    "tests/browser-concept.cjs": "1847b01c1adaa184d7ea1d11f834db3cdf2edeeb40f50e71c58dc0dc106fed4d",
++    "tests/browser-courses.cjs": "fe9b1b97bb401ecebe3914f7d4f8891d90482b44a69629517b1c8f295b9167fe",
++    "tests/browser-effects.cjs": "0a381ff7eec2bf3aaa90c0c02c4f420669725a5ae5be20051b8a5eb5cc1a23f9",
++    "tests/browser-flicker.cjs": "bf7b0298f3478c83049f91a9c1ffbdaa562a91d1657115a35c3e9e7680741d1d",
++    "tests/browser-materials.cjs": "b5d7c1929466255c2de4d9ff09a0185d0fbc303970356df93d7d765d58f700a4",
++    "tests/browser-mountain.cjs": "239fd509b106117e0484f39b431aeea52a3f2bbdbe6c38b4f45eef408a95aa16",
++    "tests/browser-presentation.cjs": "27a1e2f8376cf09e49d87f52a511230fb2e49480005467f10caab3ec9391c9e3",
++    "tests/browser-racers.cjs": "3900d7466f305d87b39b50c83d16c51ffb07198751a0604d44de664ffacd69f6",
++    "tests/browser-sky.cjs": "eb41c300862b0b9f086eb8f0707aae21b3d14603a80346a3461afa3807466c1f",
++    "tests/browser-slice.cjs": "d72efcd1b9cb6795fb11614cf479681697a0cc233c066e92faef97f7b3e69ca1",
++    "tests/browser-states.cjs": "19428bb03bef7a35dedf23638d3ed943e06c2d1161f7919e545e5d52d67c7fb3",
++    "tests/browser_e2e.py": "a3215f847e94a323c292c1bcf881f35407161401087ed236d07376c44f97e5a2",
++    "tests/build-state-report.py": "4725864bd47a37722df3b14e71ac1429442eb2dc54a6b17275a8279251c9874b",
++    "tests/course-pack.cjs": "b8ed0acb1d8d93913e2a70b769541d057669e752b5847eb23722da16a99b773a",
++    "tests/courses.cjs": "3d83e85eba0dff66da48bf14c09054f21e4ed370b643ab0be83190325e61c834",
++    "tests/drive.cjs": "ac075d2c5d32c7dfa8ca7b7e171cd55a910d37e8a241fd7886d08f3bd8e1e2b2",
++    "tests/hidden-state-contract.cjs": "acad4f2acb765de9e2ebf1bdf6e68e4a7c6a5216d9e3caa0e7d846a8bac52cb0",
++    "tests/mountain.cjs": "c794e1075705ba386804e4656ab21d2cba98d652b6b6171d631c173ba1fe8933",
++    "tests/profile-slice.cjs": "47f0f7a8d2fe4dd2b09801a14cc64b0d0c54af70c2174cb7b43f2a97bb49e5cc",
++    "tests/racers.cjs": "9cc82fafaf6c40d4e38b846ab7cf8554e5a0734db216b0a7f44da4ea89251e06",
++    "tests/requirements-verify.txt": "3ac03b3e052baefd9bf6c5a9f06765194c63c546316e2b54bc30b38b3dedc2ad",
++    "tests/state-contract.cjs": "781364cc05b4963fc748a9f4db2cf6d1cc2261055227ff8d4b4848f6f4fee5f5",
++    "tests/verify.py": "3dec6e0b8d06ceff7bb67b692a4814e7eaf8a50a7cec527f8b7d58bebe4ab84f",
++    "tests/verify_tla.py": "309e5c4e86815f14cb4a99618ed5860648b6802c67c0d4e8aa6556e0d403a869"
++  },
++  "target": "Local same-origin HTTP server",
++  "evidence": "See the project Page evidence archive and acceptance.md",
++  "mountainChecks": 51,
++  "screenshots": 614,
++  "videos": 8,
++  "vehicleRegions": 486,
++  "temporalFrames": 540,
++  "flickerChecks": 27,
++  "terrainOcclusionFixtures": 2,
++  "partialTerrainOcclusionFixtures": 4,
++  "subpixelTerrainOcclusionFixtures": 2,
++  "cameraFrames": 450,
++  "bodyCameraChecks": 232,
++  "courseChecks": 56,
++  "matrixChecks": 30,
++  "racerChecks": 93,
++  "presentationChecks": 11,
++  "sliceRaceSeconds": 66.15400000000328,
++  "skyChecks": 4,
++  "materialScenes": 20,
++  "conceptChecks": 5,
++  "commandPathsNormalized": true
++}
+diff --git a/verification/material-candidate/material-scenes.json b/verification/material-candidate/material-scenes.json
+new file mode 100644
+index 0000000..1b6940f
+--- /dev/null
++++ b/verification/material-candidate/material-scenes.json
+@@ -0,0 +1,378 @@
++{
++  "passed": true,
++  "browser": "156.0.8078.79",
++  "source": "GT01 frozen-source complete local verification; see ../gt01-acceptance/results.json",
++  "scenes": [
++    {
++      "map": "circuit",
++      "view": "first",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 1,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "circuit",
++      "view": "chase",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 2,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "mountain",
++      "view": "first",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 3,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "mountain",
++      "view": "chase",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 4,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "proving",
++      "view": "first",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 5,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "proving",
++      "view": "chase",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 6,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "city",
++      "view": "first",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 7,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "city",
++      "view": "chase",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 8,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "offroad",
++      "view": "first",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 9,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "offroad",
++      "view": "chase",
++      "viewport": {
++        "width": 1280,
++        "height": 720
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 10,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "circuit",
++      "view": "first",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 11,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "circuit",
++      "view": "chase",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 12,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "mountain",
++      "view": "first",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 13,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "mountain",
++      "view": "chase",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 14,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "proving",
++      "view": "first",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 15,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "proving",
++      "view": "chase",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 16,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "city",
++      "view": "first",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 17,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "city",
++      "view": "chase",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 18,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "offroad",
++      "view": "first",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 19,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    },
++    {
++      "map": "offroad",
++      "view": "chase",
++      "viewport": {
++        "width": 390,
++        "height": 844
++      },
++      "renderer": {
++        "backend": "materials",
++        "draws": 20,
++        "failure": null,
++        "shadowSize": 128,
++        "softwareGpu": true,
++        "renderLimit": 256,
++        "skyLoaded": true
++      }
++    }
++  ],
++  "pictures": [
++    "circuit-first-1280.png",
++    "circuit-chase-1280.png",
++    "mountain-first-1280.png",
++    "mountain-chase-1280.png",
++    "proving-first-1280.png",
++    "proving-chase-1280.png",
++    "city-first-1280.png",
++    "city-chase-1280.png",
++    "offroad-first-1280.png",
++    "offroad-chase-1280.png",
++    "circuit-first-390.png",
++    "circuit-chase-390.png",
++    "mountain-first-390.png",
++    "mountain-chase-390.png",
++    "proving-first-390.png",
++    "proving-chase-390.png",
++    "city-first-390.png",
++    "city-chase-390.png",
++    "offroad-first-390.png",
++    "offroad-chase-390.png",
++    "context-loss-fallback.png",
++    "context-restored.png"
++  ],
++  "negativeControl": {
++    "pixels": 17079
++  },
++  "contextRestored": true,
++  "fallbackPreservesGame": true,
++  "errors": [],
++  "scope": "Actual WebGL material and shadow shaders, all five maps, two cameras, landscape and portrait. Frozen scene inputs; the full suite separately requires ordinary native-animation driving and a legal three-lap finish. No physical phone or photographic parity claim."
++}
+diff --git a/verification/material-candidate/mountain-visibility.json b/verification/material-candidate/mountain-visibility.json
+new file mode 100644
+index 0000000..8383b28
+--- /dev/null
++++ b/verification/material-candidate/mountain-visibility.json
+@@ -0,0 +1,1450 @@
++{
++  "rows": [
++    {
++      "index": 0,
++      "pixels": 9756,
++      "width": 108,
++      "height": 110
++    },
++    {
++      "index": 1,
++      "pixels": 9750,
++      "width": 111,
++      "height": 108
++    },
++    {
++      "index": 2,
++      "pixels": 8956,
++      "width": 108,
++      "height": 101
++    },
++    {
++      "index": 3,
++      "pixels": 26365,
++      "width": 200,
++      "height": 176
++    },
++    {
++      "index": 4,
++      "pixels": 15587,
++      "width": 148,
++      "height": 134
++    },
++    {
++      "index": 5,
++      "pixels": 8849,
++      "width": 108,
++      "height": 102
++    },
++    {
++      "index": 6,
++      "pixels": 8624,
++      "width": 108,
++      "height": 100
++    },
++    {
++      "index": 7,
++      "pixels": 8353,
++      "width": 108,
++      "height": 100
++    },
++    {
++      "index": 8,
++      "pixels": 8725,
++      "width": 108,
++      "height": 100
++    },
++    {
++      "index": 9,
++      "pixels": 8788,
++      "width": 108,
++      "height": 100
++    },
++    {
++      "index": 10,
++      "pixels": 8759,
++      "width": 111,
++      "height": 97
++    },
++    {
++      "index": 11,
++      "pixels": 9851,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 12,
++      "pixels": 9831,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 13,
++      "pixels": 9626,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 14,
++      "pixels": 9493,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 15,
++      "pixels": 9529,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 16,
++      "pixels": 9444,
++      "width": 111,
++      "height": 105
++    },
++    {
++      "index": 17,
++      "pixels": 9448,
++      "width": 111,
++      "height": 105
++    },
++    {
++      "index": 18,
++      "pixels": 9426,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 19,
++      "pixels": 9397,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 20,
++      "pixels": 9497,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 21,
++      "pixels": 9568,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 22,
++      "pixels": 9596,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 23,
++      "pixels": 9780,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 24,
++      "pixels": 9906,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 25,
++      "pixels": 10109,
++      "width": 114,
++      "height": 109
++    },
++    {
++      "index": 26,
++      "pixels": 10265,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 27,
++      "pixels": 10273,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 28,
++      "pixels": 10143,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 29,
++      "pixels": 10005,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 30,
++      "pixels": 9991,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 31,
++      "pixels": 9988,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 32,
++      "pixels": 9968,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 33,
++      "pixels": 10020,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 34,
++      "pixels": 10056,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 35,
++      "pixels": 9950,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 36,
++      "pixels": 9976,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 37,
++      "pixels": 9978,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 38,
++      "pixels": 10184,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 39,
++      "pixels": 10111,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 40,
++      "pixels": 10042,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 41,
++      "pixels": 10074,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 42,
++      "pixels": 9945,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 43,
++      "pixels": 25938,
++      "width": 191,
++      "height": 175
++    },
++    {
++      "index": 44,
++      "pixels": 17584,
++      "width": 154,
++      "height": 144
++    },
++    {
++      "index": 45,
++      "pixels": 9825,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 46,
++      "pixels": 9832,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 47,
++      "pixels": 9923,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 48,
++      "pixels": 9939,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 49,
++      "pixels": 9968,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 50,
++      "pixels": 9953,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 51,
++      "pixels": 9978,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 52,
++      "pixels": 9939,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 53,
++      "pixels": 9970,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 54,
++      "pixels": 9714,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 55,
++      "pixels": 9742,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 56,
++      "pixels": 9726,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 57,
++      "pixels": 9708,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 58,
++      "pixels": 9725,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 59,
++      "pixels": 9666,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 60,
++      "pixels": 9836,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 61,
++      "pixels": 9933,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 62,
++      "pixels": 9946,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 63,
++      "pixels": 10118,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 64,
++      "pixels": 10259,
++      "width": 114,
++      "height": 109
++    },
++    {
++      "index": 65,
++      "pixels": 10555,
++      "width": 114,
++      "height": 113
++    },
++    {
++      "index": 66,
++      "pixels": 10614,
++      "width": 114,
++      "height": 113
++    },
++    {
++      "index": 67,
++      "pixels": 10329,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 68,
++      "pixels": 10194,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 69,
++      "pixels": 9960,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 70,
++      "pixels": 9936,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 71,
++      "pixels": 9876,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 72,
++      "pixels": 9805,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 73,
++      "pixels": 9816,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 74,
++      "pixels": 9805,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 75,
++      "pixels": 9786,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 76,
++      "pixels": 9811,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 77,
++      "pixels": 9867,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 78,
++      "pixels": 9892,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 79,
++      "pixels": 9970,
++      "width": 113,
++      "height": 108
++    },
++    {
++      "index": 80,
++      "pixels": 10010,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 81,
++      "pixels": 9980,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 82,
++      "pixels": 9886,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 83,
++      "pixels": 25144,
++      "width": 187,
++      "height": 173
++    },
++    {
++      "index": 84,
++      "pixels": 18302,
++      "width": 158,
++      "height": 144
++    },
++    {
++      "index": 85,
++      "pixels": 9786,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 86,
++      "pixels": 9770,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 87,
++      "pixels": 9765,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 88,
++      "pixels": 9764,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 89,
++      "pixels": 9789,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 90,
++      "pixels": 9878,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 91,
++      "pixels": 9872,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 92,
++      "pixels": 9939,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 93,
++      "pixels": 9949,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 94,
++      "pixels": 9959,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 95,
++      "pixels": 9896,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 96,
++      "pixels": 9884,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 97,
++      "pixels": 9894,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 98,
++      "pixels": 9850,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 99,
++      "pixels": 9890,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 100,
++      "pixels": 9892,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 101,
++      "pixels": 9866,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 102,
++      "pixels": 9926,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 103,
++      "pixels": 9945,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 104,
++      "pixels": 10152,
++      "width": 114,
++      "height": 109
++    },
++    {
++      "index": 105,
++      "pixels": 10272,
++      "width": 114,
++      "height": 109
++    },
++    {
++      "index": 106,
++      "pixels": 10528,
++      "width": 114,
++      "height": 112
++    },
++    {
++      "index": 107,
++      "pixels": 10656,
++      "width": 114,
++      "height": 113
++    },
++    {
++      "index": 108,
++      "pixels": 10645,
++      "width": 114,
++      "height": 113
++    },
++    {
++      "index": 109,
++      "pixels": 10418,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 110,
++      "pixels": 10330,
++      "width": 114,
++      "height": 109
++    },
++    {
++      "index": 111,
++      "pixels": 10274,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 112,
++      "pixels": 10062,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 113,
++      "pixels": 10029,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 114,
++      "pixels": 9968,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 115,
++      "pixels": 9898,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 116,
++      "pixels": 9908,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 117,
++      "pixels": 9880,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 118,
++      "pixels": 9851,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 119,
++      "pixels": 9918,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 120,
++      "pixels": 9911,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 121,
++      "pixels": 9758,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 122,
++      "pixels": 9610,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 123,
++      "pixels": 26013,
++      "width": 194,
++      "height": 174
++    },
++    {
++      "index": 124,
++      "pixels": 16415,
++      "width": 151,
++      "height": 138
++    },
++    {
++      "index": 125,
++      "pixels": 9195,
++      "width": 112,
++      "height": 102
++    },
++    {
++      "index": 126,
++      "pixels": 9225,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 127,
++      "pixels": 9227,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 128,
++      "pixels": 9216,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 129,
++      "pixels": 9155,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 130,
++      "pixels": 9151,
++      "width": 111,
++      "height": 103
++    },
++    {
++      "index": 131,
++      "pixels": 9258,
++      "width": 111,
++      "height": 103
++    },
++    {
++      "index": 132,
++      "pixels": 9277,
++      "width": 111,
++      "height": 103
++    },
++    {
++      "index": 133,
++      "pixels": 9263,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 134,
++      "pixels": 9318,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 135,
++      "pixels": 9281,
++      "width": 111,
++      "height": 102
++    },
++    {
++      "index": 136,
++      "pixels": 9425,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 137,
++      "pixels": 9524,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 138,
++      "pixels": 9636,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 139,
++      "pixels": 9652,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 140,
++      "pixels": 9657,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 141,
++      "pixels": 9667,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 142,
++      "pixels": 9654,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 143,
++      "pixels": 9843,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 144,
++      "pixels": 9854,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 145,
++      "pixels": 9980,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 146,
++      "pixels": 9943,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 147,
++      "pixels": 9969,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 148,
++      "pixels": 10282,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 149,
++      "pixels": 10367,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 150,
++      "pixels": 10378,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 151,
++      "pixels": 10463,
++      "width": 114,
++      "height": 111
++    },
++    {
++      "index": 152,
++      "pixels": 10593,
++      "width": 114,
++      "height": 113
++    },
++    {
++      "index": 153,
++      "pixels": 10345,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 154,
++      "pixels": 10255,
++      "width": 113,
++      "height": 110
++    },
++    {
++      "index": 155,
++      "pixels": 9973,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 156,
++      "pixels": 9932,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 157,
++      "pixels": 9909,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 158,
++      "pixels": 9905,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 159,
++      "pixels": 9860,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 160,
++      "pixels": 9933,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 161,
++      "pixels": 9949,
++      "width": 113,
++      "height": 108
++    },
++    {
++      "index": 162,
++      "pixels": 9833,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 163,
++      "pixels": 23249,
++      "width": 180,
++      "height": 166
++    },
++    {
++      "index": 164,
++      "pixels": 18751,
++      "width": 160,
++      "height": 146
++    },
++    {
++      "index": 165,
++      "pixels": 9960,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 166,
++      "pixels": 9930,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 167,
++      "pixels": 9839,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 168,
++      "pixels": 9684,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 169,
++      "pixels": 9612,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 170,
++      "pixels": 9575,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 171,
++      "pixels": 9435,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 172,
++      "pixels": 9440,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 173,
++      "pixels": 9433,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 174,
++      "pixels": 9430,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 175,
++      "pixels": 9461,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 176,
++      "pixels": 9455,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 177,
++      "pixels": 9553,
++      "width": 111,
++      "height": 104
++    },
++    {
++      "index": 178,
++      "pixels": 9549,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 179,
++      "pixels": 9610,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 180,
++      "pixels": 9770,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 181,
++      "pixels": 9878,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 182,
++      "pixels": 9844,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 183,
++      "pixels": 9628,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 184,
++      "pixels": 9628,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 185,
++      "pixels": 9619,
++      "width": 113,
++      "height": 105
++    },
++    {
++      "index": 186,
++      "pixels": 9598,
++      "width": 113,
++      "height": 105
++    },
++    {
++      "index": 187,
++      "pixels": 9615,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 188,
++      "pixels": 9817,
++      "width": 113,
++      "height": 105
++    },
++    {
++      "index": 189,
++      "pixels": 9796,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 190,
++      "pixels": 9937,
++      "width": 113,
++      "height": 107
++    },
++    {
++      "index": 191,
++      "pixels": 9924,
++      "width": 113,
++      "height": 106
++    },
++    {
++      "index": 192,
++      "pixels": 10011,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 193,
++      "pixels": 10223,
++      "width": 114,
++      "height": 109
++    },
++    {
++      "index": 194,
++      "pixels": 10343,
++      "width": 114,
++      "height": 110
++    },
++    {
++      "index": 195,
++      "pixels": 10360,
++      "width": 114,
++      "height": 111
++    },
++    {
++      "index": 196,
++      "pixels": 10090,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 197,
++      "pixels": 9956,
++      "width": 114,
++      "height": 108
++    },
++    {
++      "index": 198,
++      "pixels": 9659,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 199,
++      "pixels": 9584,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 200,
++      "pixels": 9576,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 201,
++      "pixels": 9635,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 202,
++      "pixels": 9496,
++      "width": 113,
++      "height": 103
++    },
++    {
++      "index": 203,
++      "pixels": 24053,
++      "width": 186,
++      "height": 167
++    },
++    {
++      "index": 204,
++      "pixels": 17850,
++      "width": 158,
++      "height": 142
++    },
++    {
++      "index": 205,
++      "pixels": 9366,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 206,
++      "pixels": 9391,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 207,
++      "pixels": 9366,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 208,
++      "pixels": 9514,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 209,
++      "pixels": 9479,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 210,
++      "pixels": 9628,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 211,
++      "pixels": 9660,
++      "width": 114,
++      "height": 105
++    },
++    {
++      "index": 212,
++      "pixels": 9623,
++      "width": 113,
++      "height": 105
++    },
++    {
++      "index": 213,
++      "pixels": 9637,
++      "width": 113,
++      "height": 105
++    },
++    {
++      "index": 214,
++      "pixels": 9638,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 215,
++      "pixels": 9609,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 216,
++      "pixels": 9604,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 217,
++      "pixels": 9577,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 218,
++      "pixels": 9577,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 219,
++      "pixels": 9591,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 220,
++      "pixels": 9638,
++      "width": 112,
++      "height": 105
++    },
++    {
++      "index": 221,
++      "pixels": 9610,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 222,
++      "pixels": 9635,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 223,
++      "pixels": 9846,
++      "width": 114,
++      "height": 104
++    },
++    {
++      "index": 224,
++      "pixels": 9872,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 225,
++      "pixels": 9937,
++      "width": 114,
++      "height": 107
++    },
++    {
++      "index": 226,
++      "pixels": 9694,
++      "width": 112,
++      "height": 104
++    },
++    {
++      "index": 227,
++      "pixels": 9418,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 228,
++      "pixels": 9421,
++      "width": 113,
++      "height": 103
++    },
++    {
++      "index": 229,
++      "pixels": 9320,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 230,
++      "pixels": 9334,
++      "width": 113,
++      "height": 103
++    },
++    {
++      "index": 231,
++      "pixels": 9297,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 232,
++      "pixels": 9261,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 233,
++      "pixels": 9223,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 234,
++      "pixels": 9146,
++      "width": 112,
++      "height": 103
++    },
++    {
++      "index": 235,
++      "pixels": 9368,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 236,
++      "pixels": 9320,
++      "width": 113,
++      "height": 104
++    },
++    {
++      "index": 237,
++      "pixels": 9614,
++      "width": 113,
++      "height": 103
++    },
++    {
++      "index": 238,
++      "pixels": 9884,
++      "width": 114,
++      "height": 106
++    },
++    {
++      "index": 239,
++      "pixels": 10344,
++      "width": 108,
++      "height": 114
++    }
++  ],
++  "negativeControl": {
++    "pixels": 0,
++    "width": 0,
++    "height": 0
++  },
++  "source": "GT01 frozen-source complete local verification; see ../gt01-acceptance/results.json"
++}

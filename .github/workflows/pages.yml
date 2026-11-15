@@ -1,0 +1,93 @@
+name: Verify and publish game
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install browser test tools
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r tests/requirements-verify.txt
+          npm ci
+          .venv/bin/python -m playwright install --with-deps --only-shell chromium
+      - name: Verify state machines, TLA+ and real Chromium E2E
+        run: .venv/bin/python tests/verify.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ github.sha }}
+          path: verification/latest/
+          if-no-files-found: error
+          retention-days: 14
+  deploy:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[verify only]')
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+      - name: Publish GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+  verify-live:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install browser test tools
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r tests/requirements-verify.txt
+          npm ci
+          .venv/bin/python -m playwright install --with-deps --only-shell chromium
+      - name: Verify the deployed source and full gameplay matrix
+        env:
+          DRIVE_URL: https://liushiyumath.github.io/graybox-drive/
+          DRIVE_VERIFY_DIR: verification/latest-live
+        run: .venv/bin/python tests/verify.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-verification-${{ github.sha }}
+          path: verification/latest-live/
+          if-no-files-found: error
+          retention-days: 14

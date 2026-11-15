@@ -1,0 +1,106 @@
+{
+  "sourceCommit": "9ee8c283d3f3d8f3cc79916993f1d4dcbfc22766",
+  "verification": {
+    "passed": true,
+    "commands": 32,
+    "screenshots": 614,
+    "videos": 8,
+    "sourceHashes": 69
+  },
+  "files": [
+    {
+      "file": "graybox-gt01-verified-source.zip",
+      "bytes": 312559,
+      "sha256": "3b49958fd0969950041266353336a63983eb87f3cdbcd020dcb010bfe58d4197",
+      "parts": [
+        "graybox-gt01-verified-source.zip"
+      ]
+    },
+    {
+      "file": "graybox-gt01-verified.patch",
+      "bytes": 136615,
+      "sha256": "34c32c5dce96a28ee2682a519f74b1cf976a7e2689fa505c575caaba50f23652",
+      "parts": [
+        "graybox-gt01-verified.patch"
+      ]
+    },
+    {
+      "file": "graybox-gt01-verified-evidence.zip",
+      "bytes": 6391434,
+      "sha256": "3c919e9dca1e10c4690b75e56697f2ecef067f0d21df17c6081f4da769801de8",
+      "parts": [
+        "graybox-gt01-verified-evidence.zip.part000",
+        "graybox-gt01-verified-evidence.zip.part001",
+        "graybox-gt01-verified-evidence.zip.part002",
+        "graybox-gt01-verified-evidence.zip.part003",
+        "graybox-gt01-verified-evidence.zip.part004",
+        "graybox-gt01-verified-evidence.zip.part005",
+        "graybox-gt01-verified-evidence.zip.part006",
+        "graybox-gt01-verified-evidence.zip.part007",
+        "graybox-gt01-verified-evidence.zip.part008",
+        "graybox-gt01-verified-evidence.zip.part009",
+        "graybox-gt01-verified-evidence.zip.part010",
+        "graybox-gt01-verified-evidence.zip.part011",
+        "graybox-gt01-verified-evidence.zip.part012"
+      ]
+    },
+    {
+      "file": "graybox-gt01-verified-material-scenes.zip",
+      "bytes": 7274462,
+      "sha256": "f4a11aea99874dc6e39aa99102d871bb0f8ea4f419913cdcf5f61a7d3710ca2c",
+      "parts": [
+        "graybox-gt01-verified-material-scenes.zip.part000",
+        "graybox-gt01-verified-material-scenes.zip.part001",
+        "graybox-gt01-verified-material-scenes.zip.part002",
+        "graybox-gt01-verified-material-scenes.zip.part003",
+        "graybox-gt01-verified-material-scenes.zip.part004",
+        "graybox-gt01-verified-material-scenes.zip.part005",
+        "graybox-gt01-verified-material-scenes.zip.part006",
+        "graybox-gt01-verified-material-scenes.zip.part007",
+        "graybox-gt01-verified-material-scenes.zip.part008",
+        "graybox-gt01-verified-material-scenes.zip.part009",
+        "graybox-gt01-verified-material-scenes.zip.part010",
+        "graybox-gt01-verified-material-scenes.zip.part011",
+        "graybox-gt01-verified-material-scenes.zip.part012",
+        "graybox-gt01-verified-material-scenes.zip.part013"
+      ]
+    },
+    {
+      "file": "gt01-verified-race-8s.mp4",
+      "bytes": 2287420,
+      "sha256": "e187b30cf808864b6e63f6b5a8fb76a927734bcc2f7701f08987b6a8f6ed3e0b",
+      "parts": [
+        "gt01-verified-race-8s.mp4.part000",
+        "gt01-verified-race-8s.mp4.part001",
+        "gt01-verified-race-8s.mp4.part002",
+        "gt01-verified-race-8s.mp4.part003",
+        "gt01-verified-race-8s.mp4.part004"
+      ]
+    },
+    {
+      "file": "full-race.webm",
+      "bytes": 9192730,
+      "sha256": "977da7cea6e6b85b8c79cafb3fde6a7b0954271dcda13cc19d2c1f5127692cb0",
+      "parts": [
+        "full-race.webm.part000",
+        "full-race.webm.part001",
+        "full-race.webm.part002",
+        "full-race.webm.part003",
+        "full-race.webm.part004",
+        "full-race.webm.part005",
+        "full-race.webm.part006",
+        "full-race.webm.part007",
+        "full-race.webm.part008",
+        "full-race.webm.part009",
+        "full-race.webm.part010",
+        "full-race.webm.part011",
+        "full-race.webm.part012",
+        "full-race.webm.part013",
+        "full-race.webm.part014",
+        "full-race.webm.part015",
+        "full-race.webm.part016",
+        "full-race.webm.part017"
+      ]
+    }
+  ]
+}
